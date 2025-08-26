@@ -5,7 +5,7 @@ metadata:
   name: {{ include "sdp.fullname" . }}-ap
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "sdp.labels" . | nindent 4 }}
+    {{- include "sdp.labelsWithSuffix" (list . "-ap") | nindent 4 }}
   annotations:
     {{- toYaml .Values.anchorPlatform.ingress.annotations | nindent 4 }}
 spec:
@@ -20,17 +20,11 @@ spec:
     - host: {{ include "sdp.ap.domain" . | quote }}
       http:
         paths:
-          # Only enable the AP endpints that are needed for this application:
-          {{- $service_name := printf "%s-ap" (include "sdp.fullname" .) }}
-          {{- $service_sep_port := include "sdp.ap.sepPort" . }}
-          {{- $paths := list "/health" "/.well-known" "/auth" "/sep24" -}}
-          {{- range $path := $paths }}
-          - path: {{ $path }}
+          - path: /
             pathType: Prefix
             backend:
               service:
-                name: {{ $service_name }}
+                name: {{ include "sdp.fullname" . }}-ap
                 port:
-                  number: {{ $service_sep_port }}
-          {{- end }}
+                  number: {{ include "sdp.ap.sepPort" . }}
 {{- end }}

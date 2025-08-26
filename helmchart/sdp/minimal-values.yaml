@@ -19,6 +19,12 @@ sdp:
   ## Disable the TLS for the SDP ingress
   ingress:
     tls: []
+    # Override paths to fix .well-known issue
+    paths:
+      - path: /
+        pathType: Prefix
+      - path: /.well-known/stellar.toml
+        pathType: Exact
   ## Generate secrets for the SDP
   kubeSecrets:
     secretName: sdp
@@ -35,6 +41,12 @@ anchorPlatform:
   ## Disable the TLS for the Anchor Platform ingress
   ingress:
     tls: []
+    # Override paths to fix .well-known issue
+    paths:
+      - path: /
+        pathType: Prefix
+      - path: /.well-known/stellar.toml
+        pathType: Exact
   ## Generate secrets for the Anchor Platform
   kubeSecrets:
     secretName: sdp-ap
@@ -58,3 +70,6 @@ dashboard:
   ## Disable the TLS for the Dashboard ingress
   ingress:
     tls: []
+    paths:
+      - path: /
+        pathType: Prefix

@@ -73,7 +73,7 @@ global:
   ephemeralDatabase: true
 
   ## @param global.autoGenerateSecrets Determines if secrets should be auto-generated.
-  autoGenerateSecrets: false
+  autoGenerateSecrets: true
 
   ## @extra global.eventBroker Configuration related to the event broker used by the application.
   ## @param global.eventBroker.type The type of event broker to be used. Options: "NONE", "KAFKA". Default: "KAFKA".
@@ -95,13 +95,13 @@ global:
 
   ## @param global.distributionPublicKey The public key of the HOST's Stellar distribution account, used to create channel accounts.
   ## @param global.distributionPrivateKey The private key of the root Stellar distribution account
-  distributionPublicKey: #required
-  distributionPrivateKey: #required
+  distributionPublicKey: GCDWG5NGM5FPSEHHTEFLWOAN56ONS2F5EAJBOOYZGOV4YWX42N5TDAOZ
+  distributionPrivateKey: SCQEJTYBWQYVJZ7MNNW5IFREDJ2O7WDE2KKPVREVCKVH7GIHRQXSUCPP
 
   ## @param global.sep10PublicKey Anchor platform SEP10 signing public key.
   ## @param global.sep10PrivateKey The public key of the Stellar account that signs the SEP-10 transactions. It's also used to sign URLs.
-  sep10PublicKey: #required
-  sep10PrivateKey: #required
+  sep10PublicKey: GBZOGNTXWGEFDPFFWXUVI4E544LFYQTKLZSYN37GE32U2AEVJPZPSSXH
+  sep10PrivateKey: SAXXSKUTNZCWVUD6VLBXFH35Y3H5QQ6XC4VGKMRANUKG3YXR35LUIA54
 
   ## @param global.recaptchaSiteKey Site key for ReCaptcha V2 to verify user's non-robotic behavior. Default value is for testing.
   ## @param global.recaptchaSiteSecretKey Secret key for ReCaptcha V2 to verify user's non-robotic behavior. Default value is for testing.
@@ -135,10 +135,10 @@ sdp:
   ## @param sdp.route.metricsPort Port dedicated to metrics collection for the SDP service.
   ## @param sdp.route.adminPort Port dedicated to serve the SDP admin endpoints, used to manage new or existing tenants.
   route:
-    schema: "https"
-    domain: #required
-    mtnDomain: #required
-    adminDomain: #optional
+    schema: "http"
+    domain: "sdp.local"
+    mtnDomain: "*.sdp.local"
+    adminDomain: "admin.local"
     port: "8000"
     metricsPort: "8002"
     adminPort: "8003"
@@ -208,12 +208,12 @@ sdp:
 
       # Configurations with default values
       ## General configuration
-      INSTANCE_NAME: "SDP Testnet"
+      INSTANCE_NAME: "SDP Pubnet"
 
       ## Monitoring and logging configuration
       CRASH_TRACKER_TYPE: "DRY_RUN"
-      ENVIRONMENT: "dev"
-      LOG_LEVEL: "INFO"
+      ENVIRONMENT: "prod"
+      LOG_LEVEL: "DEBUG"
       METRICS_TYPE: "PROMETHEUS"
 
       ## Messaging service configuration
@@ -222,8 +222,8 @@ sdp:
 
       ## Security Configuration
       CORS_ALLOWED_ORIGINS: "*"
-      DISABLE_RECAPTCHA: "false"
-      DISABLE_MFA: "false"
+      DISABLE_RECAPTCHA: "true"
+      DISABLE_MFA: "true"
 
       ## Background tasks configuration
       SCHEDULER_PAYMENT_JOB_SECONDS: "10"
@@ -267,8 +267,8 @@ sdp:
   ## @extra sdp.kubeSecrets.data.ADMIN_API_KEY The API key for the admin account. To use, add to the request header as 'Authorization', formatted as Base64-encoded 'ADMIN_ACCOUNT:ADMIN_API_KEY'.",
   ## @extra sdp.kubeSecrets.data.BRIDGE_API_KEY The API key for the bridge integration. Required if ENABLE_BRIDGE_INTEGRATION is set to true.
   kubeSecrets:
-    secretName: "sdp-backend-secret-name"
-    create: false
+    secretName: "sdp"
+    create: true
     annotations:
     data: {}
 
@@ -353,8 +353,8 @@ anchorPlatform:
   ## @param anchorPlatform.route.sepPort The port of the sep server of the anchor platform. This is the public API that is meant to be reached by a client application, such as the stellar.toml file."
   ## @param anchorPlatform.route.platformPort The port of the platform server of the anchor platform. This is the private API that is meant to be reached only by the SDP server, such as the PATCH /sep24/transactions endpoint.",
   route:
-    schema: "https"
-    domain: #required
+    schema: "http"
+    domain: "ap.local"
     sepPort: "8080"
     platformPort: "8085"
 
@@ -477,7 +477,7 @@ tss:
   ## @param tss.route.port Primary port on which the TSS listens.
   ## @param tss.route.metricsPort Port dedicated to metrics collection for the TSS.
   route:
-    schema: "https"
+    schema: "http"
     port: "9000"
     metricsPort: "9002"
 
@@ -553,8 +553,8 @@ tss:
   ## @extra tss.kubeSecrets.data.KAFKA_SSL_ACCESS_KEY Access key (keystore) in PEM format. Required if KAFKA_SECURITY_PROTOCOL is set to "SSL".
   ## @extra tss.kubeSecrets.data.KAFKA_SSL_ACCESS_CERTIFICATE Certificate in PEM format that matches with the Kafka Access Key. Required if KAFKA_SECURITY_PROTOCOL is set to "SSL".
   kubeSecrets:
-    secretName: "tss-secret-name"
-    create: false
+    secretName: "sdp-tss"
+    create: true
     annotations: {}
     data: {}
       ## General configuration
@@ -591,9 +591,9 @@ dashboard:
   ## @param dashboard.route.mtnDomain Public domain/address of the multi-tenant Dashboard. This is a wild-card domain used for multi-tenant setups e.g. "*.sdp-dashboard.localhost.com".
   ## @param dashboard.route.port Primary port on which the Dashboard listens.
   route:
-    schema: "https"
-    domain: #required
-    mtnDomain: #required
+    schema: "http"
+    domain: "dashboard.local"
+    mtnDomain: "*.dashboard.local"
     port: "80"
 
   ## @extra dashboard.image Configuration related to the Docker image used by the Dashboard.
@@ -647,7 +647,4 @@ dashboard:
     enabled: true
     className: "nginx"
     annotations: {}
-    tls:
-    - hosts:
-      - '{{ include "sdp.dashboard.domain" . }}'
-      secretName: dashboard-tls-cert-name # You need to create this secret manually. For more instructions, please refer to helmchart/docs/README.md
+    tls: []
