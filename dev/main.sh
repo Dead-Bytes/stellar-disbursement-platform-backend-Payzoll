@@ -97,6 +97,8 @@ adminApiKey="api_key_1234567890"
 encodedCredentials=$(echo -n "$adminAccount:$adminApiKey" | base64)
 AuthHeader="Authorization: Basic $encodedCredentials"
 
+echo "AuthHeader: $AuthHeader"
+
 existingTenants=$(curl -s -H "$AuthHeader" $AdminTenantURL)
 echo "Response from GET /tenants: $existingTenants"
 
