@@ -59,15 +59,12 @@ func main() {
 		log.Fatal("Key pair was not initialized.")
 	}
 
-	client := horizonclient.DefaultTestNetClient
+	client := horizonclient.DefaultPublicNetClient
 
 	if fundXLM {
-		_, err := client.Fund(pair.Address())
-		if err != nil {
-			printHorizonError(err)
-			log.Fatalf("Failed to fund with Friendbot: %v", err)
-		}
-		fmt.Println("Funded with XLM using Friendbot.")
+		fmt.Println("⚠️  WARNING: Friendbot funding is not available on mainnet.")
+		fmt.Printf("Please manually fund account %s with XLM from your funded wallet.\n", pair.Address())
+		fmt.Printf("You can use https://stellar.expert/explorer/public/account/%s to verify funding.\n", pair.Address())
 	}
 
 	if fundUSDC {
@@ -98,7 +95,7 @@ func establishTrustlineAndBuyUSDC(client *horizonclient.Client, pair *keypair.Fu
 		return fmt.Errorf("failed to get account details: %v", err)
 	}
 
-	usdcAsset := txnbuild.CreditAsset{Code: "USDC", Issuer: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"}
+	usdcAsset := txnbuild.CreditAsset{Code: "USDC", Issuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"}
 	changeTrustAsset, err := usdcAsset.ToChangeTrustAsset()
 	if err != nil {
 		log.Fatalf("Failed to convert to ChangeTrustAsset: %v", err)
@@ -129,7 +126,7 @@ func establishTrustlineAndBuyUSDC(client *horizonclient.Client, pair *keypair.Fu
 		return fmt.Errorf("failed to build the transaction: %v", err)
 	}
 
-	tx, err = tx.Sign(network.TestNetworkPassphrase, pair)
+	tx, err = tx.Sign(network.PublicNetworkPassphrase, pair)
 	if err != nil {
 		return fmt.Errorf("failed to sign the transaction: %v", err)
 	}

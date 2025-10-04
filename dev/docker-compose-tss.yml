@@ -10,8 +10,8 @@ services:
       - "9000:9000"
     environment:
       DATABASE_URL: postgres://postgres@db:5432/sdp_mtn?sslmode=disable
-      NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
-      HORIZON_URL: "https://horizon-testnet.stellar.org"
+      NETWORK_PASSPHRASE: "Public Global Stellar Network ; September 2015"
+      HORIZON_URL: "https://horizon.stellar.org"
       NUM_CHANNEL_ACCOUNTS: "3"
       MAX_BASE_FEE: "1000000"
       TSS_METRICS_PORT: "9002"

@@ -1,8 +1,8 @@
 window._env_ = {
     API_URL: "http://localhost:8000",
-    STELLAR_EXPERT_URL: "https://stellar.expert/explorer/testnet",
-    HORIZON_URL: "https://horizon-testnet.stellar.org",
-    USDC_ASSET_ISSUER: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
-    RECAPTCHA_SITE_KEY: "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI",
+    STELLAR_EXPERT_URL: "https://stellar.expert/explorer/public",
+    HORIZON_URL: "https://horizon.stellar.org",
+    USDC_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+    RECAPTCHA_SITE_KEY: "6LcunskrAAAAAHf6LPg15GrMl43V3zNqwlUdWeWh",
     SINGLE_TENANT_MODE: false
 };

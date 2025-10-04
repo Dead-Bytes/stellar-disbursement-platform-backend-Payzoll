@@ -92,8 +92,8 @@ AdminTenantURL="http://localhost:8003/tenants"
 tenants=("redcorp" "bluecorp" "pinkcorp")
 
 # Create missing tenants
-adminAccount="SDP-admin"
-adminApiKey="api_key_1234567890"
+adminAccount=Payzoll_Sdp_Admin
+adminApiKey=3151c64966d567c8c87
 encodedCredentials=$(echo -n "$adminAccount:$adminApiKey" | base64)
 AuthHeader="Authorization: Basic $encodedCredentials"
 
@@ -101,7 +101,7 @@ echo "AuthHeader: $AuthHeader"
 
 existingTenants=$(curl -s -H "$AuthHeader" $AdminTenantURL)
 echo "Response from GET /tenants: $existingTenants"
-
+echo "${AuthHeader}"
 existingTenantNames=[]
 if names=$(echo $existingTenants | jq -r '.[].name'); then
     if [ -n "$names" ]; then  # Only assign if names is non-empty
@@ -110,43 +110,43 @@ if names=$(echo $existingTenants | jq -r '.[].name'); then
 fi
 echo "existingTenantNames: $existingTenantNames"
 
-for tenant in "${tenants[@]}"; do
-    # Check if the tenant already exists
-    if printf '%s\n' "${existingTenantNames[@]}" | grep -q "^$tenant$"; then
-        echo "🔵Tenant $tenant already exists. Skipping."
-    else
-        echo "🐈Provisioning missing tenant: $tenant"
-        baseURL="http://$tenant.stellar.local:8000"
-        sdpUIBaseURL="http://$tenant.stellar.local:3000"
-        ownerEmail="init_owner@$tenant.local"
+# for tenant in "${tenants[@]}"; do
+#     # Check if the tenant already exists
+#     if printf '%s\n' "${existingTenantNames[@]}" | grep -q "^$tenant$"; then
+#         echo "🔵Tenant $tenant already exists. Skipping."
+#     else
+#         echo "🐈Provisioning missing tenant: $tenant"
+#         baseURL="http://$tenant.stellar.local:8000"
+#         sdpUIBaseURL="http://$tenant.stellar.local:3000"
+#         ownerEmail="init_owner@$tenant.local"
 
-        response=$(curl -s -w "\n%{http_code}" -X POST $AdminTenantURL \
-                -H "Content-Type: application/json" \
-                -H "$AuthHeader" \
-                -d '{
-                        "name": "'"$tenant"'",
-                        "organization_name": "'"$tenant"'",
-                        "base_url": "'"$baseURL"'",
-                        "sdp_ui_base_url": "'"$sdpUIBaseURL"'",
-                        "owner_email": "'"$ownerEmail"'",
-                        "owner_first_name": "jane",
-                        "owner_last_name": "doe",
-                        "distribution_account_type": "DISTRIBUTION_ACCOUNT.STELLAR.DB_VAULT"
-                }')
+#         response=$(curl -s -w "\n%{http_code}" -X POST $AdminTenantURL \
+#                 -H "Content-Type: application/json" \
+#                 -H "$AuthHeader" \
+#                 -d '{
+#                         "name": "'"$tenant"'",
+#                         "organization_name": "'"$tenant"'",
+#                         "base_url": "'"$baseURL"'",
+#                         "sdp_ui_base_url": "'"$sdpUIBaseURL"'",
+#                         "owner_email": "'"$ownerEmail"'",
+#                         "owner_first_name": "jane",
+#                         "owner_last_name": "doe",
+#                         "distribution_account_type": "DISTRIBUTION_ACCOUNT.STELLAR.DB_VAULT"
+#                 }')
 
-        http_code=$(echo "$response" | tail -n1)
-        response_body=$(echo "$response" | sed '$d')
+#         http_code=$(echo "$response" | tail -n1)
+#         response_body=$(echo "$response" | sed '$d')
 
-        if [[ "$http_code" -ge 200 && "$http_code" -lt 300 ]]; then
-            echo "✅Tenant $tenant created successfully."
-            echo "🔗You can now reset the password for the owner $ownerEmail on $sdpUIBaseURL/forgot-password"
-            echo "Response body: $response_body"
-        else
-            echo "❌Failed to create tenant $tenant. HTTP status code: $http_code"
-            echo "Server response: $response_body"
-        fi
-    fi
-done
+#         if [[ "$http_code" -ge 200 && "$http_code" -lt 300 ]]; then
+#             echo "✅Tenant $tenant created successfully."
+#             echo "🔗You can now reset the password for the owner $ownerEmail on $sdpUIBaseURL/forgot-password"
+#             echo "Response body: $response_body"
+#         else
+#             echo "❌Failed to create tenant $tenant. HTTP status code: $http_code"
+#             echo "Server response: $response_body"
+#         fi
+#     fi
+# done
 
 echo "====> ✅Step 3: finished initialization of tenants"
 echo $DIVIDER

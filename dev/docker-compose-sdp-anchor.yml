@@ -32,7 +32,8 @@ services:
       METRICS_TYPE: PROMETHEUS
       EMAIL_SENDER_TYPE: DRY_RUN
       SMS_SENDER_TYPE: DRY_RUN
-      NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+      NETWORK_PASSPHRASE: "Public Global Stellar Network ; September 2015"
+      HORIZON_URL: "https://horizon.stellar.org"
       SEP10_SIGNING_PUBLIC_KEY: ${SEP10_SIGNING_PUBLIC_KEY}
       ANCHOR_PLATFORM_BASE_SEP_URL: http://localhost:8080
       ANCHOR_PLATFORM_BASE_PLATFORM_URL: http://anchor-platform:8085
@@ -40,12 +41,12 @@ services:
       DISTRIBUTION_SEED: ${DISTRIBUTION_SEED}
       RECAPTCHA_SITE_KEY: 6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI
       DISABLE_MFA: "false"
-      DISABLE_RECAPTCHA: "true"
+      DISABLE_RECAPTCHA: "false"
       CORS_ALLOWED_ORIGINS: "*"
 
       # multi-tenant
       ADMIN_PORT: "8003"
-      INSTANCE_NAME: "SDP Testnet on Docker"
+      INSTANCE_NAME: "SDP Mainnet on Docker"
       TENANT_XLM_BOOTSTRAP_AMOUNT: 5
       SINGLE_TENANT_MODE: "false"
 
@@ -57,8 +58,8 @@ services:
       EVENT_BROKER_TYPE: "SCHEDULER"
 
       # multi-tenant secrets:
-      ADMIN_ACCOUNT: SDP-admin
-      ADMIN_API_KEY: api_key_1234567890
+      ADMIN_ACCOUNT: Payzoll_Sdp_Admin
+      ADMIN_API_KEY: 3151c64966d567c8c87
       DISTRIBUTION_ACCOUNT_ENCRYPTION_PASSPHRASE: ${DISTRIBUTION_ACCOUNT_ENCRYPTION_PASSPHRASE}
       CHANNEL_ACCOUNT_ENCRYPTION_PASSPHRASE: ${CHANNEL_ACCOUNT_ENCRYPTION_PASSPHRASE}
 
@@ -74,9 +75,9 @@ services:
       TWILIO_SENDGRID_SENDER_ADDRESS: MY_TWILIO_SENDGRID_SENDER_ADDRESS
       EC256_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgdo6o+tdFkF94B7z8\nnoybH6/zO3PryLLjLbj54/zOi4WhRANCAAQncc2mE8AQoe+1GOyXkqPBz21MypLa\nmZg3JusuzFnpy5C+DbKIShdmLE/ZwnvtywcKVcLpxvXBCn8E0YO8Yqg+\n-----END PRIVATE KEY-----"
       SEP10_SIGNING_PRIVATE_KEY: ${SEP10_SIGNING_PRIVATE_KEY}
-      SEP24_JWT_SECRET: jwt_secret_1234567890
-      RECAPTCHA_SITE_SECRET_KEY: 6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe
-      ANCHOR_PLATFORM_OUTGOING_JWT_SECRET: mySdpToAnchorPlatformSecret
+      SEP24_JWT_SECRET: 835042deb0a14c766ee591a67c14701294ef5d6015a82d9c19b96cf43c72c3b4b98fe0a5f116771cd44a933cffc189da
+      RECAPTCHA_SITE_SECRET_KEY: 6LcunskrAAAAAKCm1Hy3UGQj577K0YUnRARSLacc
+      ANCHOR_PLATFORM_OUTGOING_JWT_SECRET: a8ca87a44c955978ea740b16c774a317175744c96ab046813d44fc939eadc1a9
     entrypoint: ""
     command:
       - sh
@@ -153,7 +154,7 @@ services:
               "sep24_enabled": true,
               "schema": "stellar",
               "code": "USDC",
-              "issuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+              "issuer": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
               "distribution_account": "${DISTRIBUTION_PUBLIC_KEY}",
               "significant_decimals": 7,
               "deposit": {
