@@ -34,17 +34,6 @@ services:
     depends_on:
       - db
       - sdp-api
-  sdp-frontend:
-    extends:
-      file: docker-compose-frontend.yml
-      service: sdp-frontend
-    depends_on:
-      - db
-      - sdp-api
-  demo-wallet:
-    extends:
-      file: docker-compose-sdp-anchor.yml
-      service: demo-wallet
 
 volumes:
   postgres-db:
