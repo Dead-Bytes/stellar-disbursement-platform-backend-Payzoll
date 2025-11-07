@@ -172,8 +172,17 @@ func validatePaymentReadyForSending(p *data.Payment) error {
 	if p.Status != data.ReadyPaymentStatus {
 		return fmt.Errorf("payment %s is not in %s state", p.ID, data.ReadyPaymentStatus)
 	}
-	if p.ReceiverWallet.Status != data.RegisteredReceiversWalletStatus {
-		return fmt.Errorf("receiver wallet %s for payment %s is not in %s state", p.ReceiverWallet.ID, p.ID, data.RegisteredReceiversWalletStatus)
+	// Allow both READY and REGISTERED wallet statuses for direct payments
+	if p.Type == data.PaymentTypeDirect {
+		if p.ReceiverWallet.Status != data.ReadyReceiversWalletStatus && p.ReceiverWallet.Status != data.RegisteredReceiversWalletStatus {
+			return fmt.Errorf("receiver wallet %s for payment %s is not in READY or REGISTERED state, current status: %s",
+				p.ReceiverWallet.ID, p.ID, p.ReceiverWallet.Status)
+		}
+	} else {
+		// Disbursement payments still require REGISTERED status
+		if p.ReceiverWallet.Status != data.RegisteredReceiversWalletStatus {
+			return fmt.Errorf("receiver wallet %s for payment %s is not in %s state", p.ReceiverWallet.ID, p.ID, data.RegisteredReceiversWalletStatus)
+		}
 	}
 
 	if p.Type == data.PaymentTypeDisbursement {

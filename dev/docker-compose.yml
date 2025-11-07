@@ -35,6 +35,13 @@ services:
       - db
       - sdp-api
 
+  sdp-frontend:
+    extends:
+      file: docker-compose-frontend.yml
+      service: sdp-frontend
+    depends_on:
+      - db
+      - sdp-api
 volumes:
   postgres-db:
     driver: local

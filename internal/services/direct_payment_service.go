@@ -215,8 +215,8 @@ func (s *DirectPaymentService) CreateDirectPayment(
 			// 8. Prepare post-commit events (same as before)
 			msgs := make([]*events.Message, 0)
 
-			// Send payment for processing if ready
-			if receiverWallet.Status == data.RegisteredReceiversWalletStatus {
+			// Send payment for processing if ready (for both READY and REGISTERED wallet statuses)
+			if receiverWallet.Status == data.ReadyReceiversWalletStatus || receiverWallet.Status == data.RegisteredReceiversWalletStatus {
 				paymentMsg, err := events.NewPaymentReadyToPayMessage(ctx,
 					distributionAccount.Type.Platform(), paymentID, events.PaymentReadyToPayDirectPayment)
 				if err != nil {
@@ -293,7 +293,18 @@ func (s *DirectPaymentService) getReceiverWallet(
 	receiverWallet := receiverWallets[0]
 
 	if walletAddress != nil && *walletAddress != "" {
-		if receiverWallet.StellarAddress != *walletAddress {
+		// If wallet is in READY status and doesn't have a Stellar address yet, update it
+		if receiverWallet.Status == data.ReadyReceiversWalletStatus && receiverWallet.StellarAddress == "" {
+			err = s.Models.ReceiverWallet.Update(ctx, receiverWallet.ID, data.ReceiverWalletUpdate{
+				StellarAddress: *walletAddress,
+			}, dbTx)
+			if err != nil {
+				return nil, fmt.Errorf("updating receiver wallet stellar address: %w", err)
+			}
+			// Update the in-memory object to reflect the change
+			receiverWallet.StellarAddress = *walletAddress
+		} else if receiverWallet.StellarAddress != "" && receiverWallet.StellarAddress != *walletAddress {
+			// If address is already set but doesn't match, return error
 			return nil, fmt.Errorf("wallet address mismatch - receiver is registered with a different address for this wallet")
 		}
 	}

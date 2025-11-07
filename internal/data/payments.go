@@ -273,14 +273,14 @@ func (p *PaymentModel) GetBatchForUpdate(ctx context.Context, sqlExec db.SQLExec
 	directQuery := basePaymentQuery + `
         WHERE
             p.status = $1 -- 'READY'::payment_status
-            AND rw.status = $2 -- 'REGISTERED'::receiver_wallet_status
+            AND (rw.status = $2 OR rw.status = $3) -- 'READY'::receiver_wallet_status OR 'REGISTERED'::receiver_wallet_status
             AND p.type = 'DIRECT'
         ORDER BY p.updated_at ASC
         FOR UPDATE OF p, rw SKIP LOCKED`
 
 	var directPayments []*Payment
 	err = sqlExec.SelectContext(ctx, &directPayments, directQuery,
-		ReadyPaymentStatus, RegisteredReceiversWalletStatus)
+		ReadyPaymentStatus, ReadyReceiversWalletStatus, RegisteredReceiversWalletStatus)
 	if err != nil {
 		return nil, fmt.Errorf("getting direct payments: %w", err)
 	}
