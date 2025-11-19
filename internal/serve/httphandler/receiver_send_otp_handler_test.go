@@ -23,9 +23,9 @@ import (
 
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
 	"github.com/stellar/stellar-disbursement-platform-backend/db/dbtest"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/anchorplatform"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/message"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sepauth"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httperror"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/validators"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/utils"
@@ -116,7 +116,7 @@ func Test_ReceiverSendOTPHandler_ServeHTTP_validation(t *testing.T) {
 	models, err := data.NewModels(dbConnectionPool)
 	require.NoError(t, err)
 
-	validClaims := &anchorplatform.SEP24JWTClaims{
+	validClaims := &sepauth.SEP24JWTClaims{
 		ClientDomainClaim: "no-op-domain.test.com",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        "test-transaction-id",
@@ -124,9 +124,9 @@ func Test_ReceiverSendOTPHandler_ServeHTTP_validation(t *testing.T) {
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
 		},
 	}
-	ctxWithValidSEP24Claims := context.WithValue(ctx, anchorplatform.SEP24ClaimsContextKey, validClaims)
-	invalidClaims := &anchorplatform.SEP24JWTClaims{}
-	ctxWithInvalidSEP24Claims := context.WithValue(ctx, anchorplatform.SEP24ClaimsContextKey, invalidClaims)
+	ctxWithValidSEP24Claims := context.WithValue(ctx, sepauth.SEP24ClaimsContextKey, validClaims)
+	invalidClaims := &sepauth.SEP24JWTClaims{}
+	ctxWithInvalidSEP24Claims := context.WithValue(ctx, sepauth.SEP24ClaimsContextKey, invalidClaims)
 
 	const reCAPTCHAToken = "XyZ"
 
@@ -259,7 +259,7 @@ func Test_ReceiverSendOTPHandler_ServeHTTP_otpHandlerIsCalled(t *testing.T) {
 	require.NoError(t, err)
 	wallet := data.CreateWalletFixture(t, ctx, dbConnectionPool, "testWallet", "https://correct.test", "correct.test", "wallet123://")
 
-	validClaims := &anchorplatform.SEP24JWTClaims{
+	validClaims := &sepauth.SEP24JWTClaims{
 		ClientDomainClaim: wallet.SEP10ClientDomain,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        "test-transaction-id",
@@ -267,7 +267,7 @@ func Test_ReceiverSendOTPHandler_ServeHTTP_otpHandlerIsCalled(t *testing.T) {
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
 		},
 	}
-	ctxWithValidSEP24Claims := context.WithValue(ctx, anchorplatform.SEP24ClaimsContextKey, validClaims)
+	ctxWithValidSEP24Claims := context.WithValue(ctx, sepauth.SEP24ClaimsContextKey, validClaims)
 
 	const reCAPTCHAToken = "XyZ"
 
@@ -534,11 +534,28 @@ func Test_ReceiverSendOTPHandler_sendOTP(t *testing.T) {
 				var messengerType message.MessengerType
 				switch contactType {
 				case data.ReceiverContactTypeSMS:
-					expectedMsg = message.Message{ToPhoneNumber: phoneNumber, Body: tc.wantMessage}
+					expectedMsg = message.Message{
+						Type:          message.MessageTypeReceiverOTP,
+						ToPhoneNumber: phoneNumber,
+						Body:          tc.wantMessage,
+						TemplateVariables: map[message.TemplateVariable]string{
+							message.TemplateVarReceiverOTP: otp,
+							message.TemplateVarOrgName:     organization.Name,
+						},
+					}
 					contactInfo = phoneNumber
 					messengerType = message.MessengerTypeTwilioSMS
 				case data.ReceiverContactTypeEmail:
-					expectedMsg = message.Message{ToEmail: email, Body: tc.wantMessage, Title: "Your One-Time Password: " + otp}
+					expectedMsg = message.Message{
+						Type:    message.MessageTypeReceiverOTP,
+						ToEmail: email,
+						Body:    tc.wantMessage,
+						Title:   "Your One-Time Password: " + otp,
+						TemplateVariables: map[message.TemplateVariable]string{
+							message.TemplateVarReceiverOTP: otp,
+							message.TemplateVarOrgName:     organization.Name,
+						},
+					}
 					contactInfo = email
 					messengerType = message.MessengerTypeAWSEmail
 				}
@@ -573,7 +590,7 @@ func Test_ReceiverSendOTPHandler_sendOTP(t *testing.T) {
 }
 
 func Test_ReceiverSendOTPHandler_RecordsAttempt_UnregisteredContacts(t *testing.T) {
-	validClaims := &anchorplatform.SEP24JWTClaims{
+	validClaims := &sepauth.SEP24JWTClaims{
 		ClientDomainClaim: "calgar.indomitus",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        "TX-MARINES",
@@ -581,7 +598,7 @@ func Test_ReceiverSendOTPHandler_RecordsAttempt_UnregisteredContacts(t *testing.
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
 		},
 	}
-	ctx := context.WithValue(context.Background(), anchorplatform.SEP24ClaimsContextKey, validClaims)
+	ctx := context.WithValue(context.Background(), sepauth.SEP24ClaimsContextKey, validClaims)
 
 	models := data.SetupModels(t)
 
@@ -630,7 +647,8 @@ func Test_ReceiverSendOTPHandler_RecordsAttempt_UnregisteredContacts(t *testing.
 			assert.Equal(t, 1, count)
 
 			// cleanup
-			_, _ = models.DBConnectionPool.ExecContext(ctx, `DELETE FROM receiver_registration_attempts`)
+			_, err = models.DBConnectionPool.ExecContext(ctx, `DELETE FROM receiver_registration_attempts`)
+			require.NoError(t, err)
 		})
 	}
 }
@@ -646,7 +664,7 @@ func Test_ReceiverSendOTPHandler_handleOTPForReceiver(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	validClaims := &anchorplatform.SEP24JWTClaims{
+	validClaims := &sepauth.SEP24JWTClaims{
 		ClientDomainClaim: "test-domain.test",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        "test-transaction-id",
@@ -654,7 +672,7 @@ func Test_ReceiverSendOTPHandler_handleOTPForReceiver(t *testing.T) {
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(10 * time.Minute)),
 		},
 	}
-	ctx = context.WithValue(ctx, anchorplatform.SEP24ClaimsContextKey, validClaims)
+	ctx = context.WithValue(ctx, sepauth.SEP24ClaimsContextKey, validClaims)
 
 	wallet := data.CreateWalletFixture(t, ctx, dbConnectionPool, "testWallet", "https://correct.test", "correct.test", "wallet123://")
 	receiverWithoutWalletInsert := &data.Receiver{
@@ -670,7 +688,7 @@ func Test_ReceiverSendOTPHandler_handleOTPForReceiver(t *testing.T) {
 		prepareMocksFn        func(t *testing.T, mockMessageDispatcher *message.MockMessageDispatcher)
 		assertLogsFn          func(t *testing.T, contactType data.ReceiverContactType, r data.Receiver, entries []logrus.Entry)
 		wantVerificationField data.VerificationType
-		wantHttpErr           func(contactType data.ReceiverContactType, r data.Receiver) *httperror.HTTPError
+		wantHTTPErr           func(contactType data.ReceiverContactType, r data.Receiver) *httperror.HTTPError
 	}{
 		{
 			name: "🟡 false positive if GetLatestByContactInfo returns no results",
@@ -729,7 +747,7 @@ func Test_ReceiverSendOTPHandler_handleOTPForReceiver(t *testing.T) {
 					Once()
 			},
 			wantVerificationField: data.VerificationTypeDateOfBirth,
-			wantHttpErr: func(contactType data.ReceiverContactType, r data.Receiver) *httperror.HTTPError {
+			wantHTTPErr: func(contactType data.ReceiverContactType, r data.Receiver) *httperror.HTTPError {
 				contactTypeStr := utils.Humanize(string(contactType))
 				truncatedContactInfo := utils.TruncateString(r.ContactByType(contactType), 3)
 				err := fmt.Errorf("sending OTP message: %w", fmt.Errorf("cannot send OTP message through %s to %s: %w", contactTypeStr, truncatedContactInfo, errors.New("error sending message")))
@@ -752,7 +770,7 @@ func Test_ReceiverSendOTPHandler_handleOTPForReceiver(t *testing.T) {
 					Once()
 			},
 			wantVerificationField: data.VerificationTypePin,
-			wantHttpErr:           nil,
+			wantHTTPErr:           nil,
 		},
 	}
 
@@ -799,8 +817,8 @@ func Test_ReceiverSendOTPHandler_handleOTPForReceiver(t *testing.T) {
 
 				contactInfo := tc.contactInfo(*receiverWithWallet, contactType)
 				verificationField, httpErr := handler.handleOTPForReceiver(ctx, contactType, contactInfo, tc.sep24ClientDomain)
-				if tc.wantHttpErr != nil {
-					wantHTTPErr := tc.wantHttpErr(contactType, *receiverWithWallet)
+				if tc.wantHTTPErr != nil {
+					wantHTTPErr := tc.wantHTTPErr(contactType, *receiverWithWallet)
 					require.NotNil(t, httpErr)
 					assert.Equal(t, *wantHTTPErr, *httpErr)
 					assert.Equal(t, tc.wantVerificationField, verificationField)

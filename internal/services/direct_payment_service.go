@@ -2,16 +2,15 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strconv"
 
+	"github.com/shopspring/decimal"
 	"github.com/stellar/go/clients/horizonclient"
 	"github.com/stellar/go/support/log"
 
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/events"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/events/schemas"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/validators"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/transactionsubmission/engine"
 	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
@@ -99,27 +98,28 @@ func (e AssetNotSupportedByWalletError) Error() string {
 
 type InsufficientBalanceForDirectPaymentError struct {
 	Asset              data.Asset
-	RequestedAmount    float64
-	AvailableBalance   float64
-	TotalPendingAmount float64
+	RequestedAmount    decimal.Decimal
+	AvailableBalance   decimal.Decimal
+	TotalPendingAmount decimal.Decimal
 }
 
 func (e InsufficientBalanceForDirectPaymentError) Error() string {
-	shortfall := (e.RequestedAmount + e.TotalPendingAmount) - e.AvailableBalance
+	requiredAmount := e.RequestedAmount.Add(e.TotalPendingAmount)
+	shortfall := requiredAmount.Sub(e.AvailableBalance)
+
 	return fmt.Sprintf(
-		"insufficient balance for direct payment: requested %.6f %s, but only %.6f available (%.6f in pending payments). Need %.6f more %s",
-		e.RequestedAmount,
+		"insufficient balance for direct payment: requested %s %s, but only %s available (%s in pending payments). Need %s more %s",
+		e.RequestedAmount.StringFixed(6),
 		e.Asset.Code,
-		e.AvailableBalance,
-		e.TotalPendingAmount,
-		shortfall,
+		e.AvailableBalance.StringFixed(6),
+		e.TotalPendingAmount.StringFixed(6),
+		shortfall.StringFixed(6),
 		e.Asset.Code,
 	)
 }
 
 type DirectPaymentService struct {
 	Models                     *data.Models
-	EventProducer              events.Producer
 	DistributionAccountService DistributionAccountServiceInterface
 	Resolvers                  *ResolverFactory
 	SubmitterEngine            engine.SubmitterEngine
@@ -127,13 +127,11 @@ type DirectPaymentService struct {
 
 func NewDirectPaymentService(
 	models *data.Models,
-	eventProducer events.Producer,
 	distributionAccount DistributionAccountServiceInterface,
 	submitterEngine engine.SubmitterEngine,
 ) *DirectPaymentService {
 	return &DirectPaymentService{
 		Models:                     models,
-		EventProducer:              eventProducer,
 		DistributionAccountService: distributionAccount,
 		Resolvers:                  NewResolverFactory(models),
 		SubmitterEngine:            submitterEngine,
@@ -148,63 +146,61 @@ func (s *DirectPaymentService) CreateDirectPayment(
 ) (*data.Payment, error) {
 	var payment *data.Payment
 
-	opts := db.TransactionOptions{
-		DBConnectionPool: s.Models.DBConnectionPool,
-		AtomicFunctionWithPostCommit: func(dbTx db.DBTransaction) (postCommitFn db.PostCommitFunction, err error) {
-			// 1. Resolve entities
-			asset, err := s.Resolvers.Asset().Resolve(ctx, dbTx, req.Asset)
-			if err != nil {
-				return nil, err
-			}
+	err := db.RunInTransaction(ctx, s.Models.DBConnectionPool, nil, func(dbTx db.DBTransaction) error {
+		// 1. Resolve entities
+		asset, err := s.Resolvers.Asset().Resolve(ctx, dbTx, req.Asset)
+		if err != nil {
+			return err
+		}
 
-			receiver, err := s.Resolvers.Receiver().Resolve(ctx, dbTx, req.Receiver)
-			if err != nil {
-				return nil, err
-			}
+		receiver, err := s.Resolvers.Receiver().Resolve(ctx, dbTx, req.Receiver)
+		if err != nil {
+			return err
+		}
 
-			wallet, err := s.Resolvers.Wallet().Resolve(ctx, dbTx, req.Wallet)
-			if err != nil {
-				return nil, err
-			}
+		wallet, err := s.Resolvers.Wallet().Resolve(ctx, dbTx, req.Wallet)
+		if err != nil {
+			return err
+		}
 
-			// 2. Validate wallet is enabled
-			if !wallet.Enabled {
-				return nil, WalletNotEnabledError{WalletName: wallet.Name}
-			}
+		// 2. Validate wallet is enabled
+		if !wallet.Enabled {
+			return WalletNotEnabledError{WalletName: wallet.Name}
+		}
 
-			// 3. Validate asset is supported by wallet
-			if err = s.validateAssetWalletCompatibility(ctx, asset, wallet); err != nil {
-				return nil, err
-			}
+		// 3. Validate asset is supported by wallet
+		if err = s.validateAssetWalletCompatibility(ctx, asset, wallet); err != nil {
+			return err
+		}
 
-			// 4. Get and validate receiver wallet
-			receiverWallet, err := s.getReceiverWallet(ctx, dbTx, receiver.ID, wallet.ID, req.Wallet.Address)
-			if err != nil {
-				return nil, fmt.Errorf("getting receiver wallet: %w", err)
-			}
-			if receiverWallet.Status != data.ReadyReceiversWalletStatus && receiverWallet.Status != data.RegisteredReceiversWalletStatus {
-				return nil, ReceiverWalletNotReadyForPaymentError{CurrentStatus: receiverWallet.Status}
-			}
+		// 4. Get and validate receiver wallet
+		receiverWallet, err := s.getReceiverWallet(ctx, dbTx, receiver.ID, wallet.ID, req.Wallet.Address)
+		if err != nil {
+			return fmt.Errorf("getting receiver wallet: %w", err)
+		}
+		if receiverWallet.Status != data.ReadyReceiversWalletStatus && receiverWallet.Status != data.RegisteredReceiversWalletStatus {
+			return ReceiverWalletNotReadyForPaymentError{CurrentStatus: receiverWallet.Status}
+		}
 
-			// 5. Validate balance
-			if err = s.validateBalance(ctx, dbTx, distributionAccount, asset, req.Amount); err != nil {
-				return nil, err
-			}
+		// 5. Validate balance
+		if err = s.validateBalance(ctx, dbTx, distributionAccount, asset, req.Amount); err != nil {
+			return err
+		}
 
-			// 6. Create payment
-			paymentInsert := data.PaymentInsert{
-				ReceiverID:        receiver.ID,
-				Amount:            req.Amount,
-				AssetID:           asset.ID,
-				ReceiverWalletID:  receiverWallet.ID,
-				ExternalPaymentID: req.ExternalPaymentID,
-				PaymentType:       data.PaymentTypeDirect,
-			}
+		// 6. Create payment
+		paymentInsert := data.PaymentInsert{
+			ReceiverID:        receiver.ID,
+			Amount:            req.Amount,
+			AssetID:           asset.ID,
+			ReceiverWalletID:  receiverWallet.ID,
+			ExternalPaymentID: req.ExternalPaymentID,
+			PaymentType:       data.PaymentTypeDirect,
+		}
 
-			paymentID, err := s.Models.Payment.CreateDirectPayment(ctx, dbTx, paymentInsert, user.ID)
-			if err != nil {
-				return nil, fmt.Errorf("creating payment: %w", err)
-			}
+		paymentID, err := s.Models.Payment.CreateDirectPayment(ctx, dbTx, paymentInsert, user.ID)
+		if err != nil {
+			return fmt.Errorf("creating payment: %w", err)
+		}
 
 			// 7. Get the created payment
 			payment, err = s.Models.Payment.Get(ctx, paymentID, dbTx)
@@ -283,14 +279,9 @@ func (s *DirectPaymentService) getReceiverWallet(
 		return nil, fmt.Errorf("checking for existing receiver wallet: %w", err)
 	}
 
-	if len(receiverWallets) == 0 {
-		return nil, &ReceiverWalletNotFoundError{
-			ReceiverID: receiverID,
-			WalletID:   walletID,
-		}
-	}
-
-	receiverWallet := receiverWallets[0]
+	// If receiver wallet exists, return it
+	if len(receiverWallets) > 0 {
+		receiverWallet := receiverWallets[0]
 
 	if walletAddress != nil && *walletAddress != "" {
 		// If wallet is in READY status and doesn't have a Stellar address yet, update it
@@ -309,7 +300,61 @@ func (s *DirectPaymentService) getReceiverWallet(
 		}
 	}
 
-	return receiverWallet, nil
+		return receiverWallet, nil
+	}
+
+	// No receiver wallet exists - check if this is a SEP-24 wallet and receiver has verifications
+	wallet, err := s.Models.Wallets.Get(ctx, walletID)
+	if err != nil {
+		return nil, fmt.Errorf("getting wallet: %w", err)
+	}
+
+	if wallet.UserManaged {
+		return nil, &ReceiverWalletNotFoundError{
+			ReceiverID: receiverID,
+			WalletID:   walletID,
+		}
+	}
+
+	// Check if receiver has any verifications
+	receiverVerifications, err := s.Models.ReceiverVerification.GetAllByReceiverID(ctx, dbTx, receiverID)
+	if err != nil {
+		return nil, fmt.Errorf("checking receiver verifications: %w", err)
+	}
+
+	if len(receiverVerifications) == 0 {
+		return nil, &ReceiverWalletNotFoundError{
+			ReceiverID: receiverID,
+			WalletID:   walletID,
+		}
+	}
+
+	rwInsert := data.ReceiverWalletInsert{
+		ReceiverID: receiverID,
+		WalletID:   walletID,
+	}
+
+	newReceiverWalletID, err := s.Models.ReceiverWallet.GetOrInsertReceiverWallet(ctx, dbTx, rwInsert)
+	if err != nil {
+		return nil, fmt.Errorf("creating receiver wallet: %w", err)
+	}
+
+	// Update the status to READY using the data package method
+	rwUpdate := data.ReceiverWalletUpdate{
+		Status: data.ReadyReceiversWalletStatus,
+	}
+
+	err = s.Models.ReceiverWallet.Update(ctx, newReceiverWalletID, rwUpdate, dbTx)
+	if err != nil {
+		return nil, fmt.Errorf("updating receiver wallet status to READY: %w", err)
+	}
+
+	createdReceiverWallet, err := s.Models.ReceiverWallet.GetByID(ctx, dbTx, newReceiverWalletID)
+	if err != nil {
+		return nil, fmt.Errorf("getting created receiver wallet: %w", err)
+	}
+
+	return createdReceiverWallet, nil
 }
 
 func (s *DirectPaymentService) validateBalance(
@@ -319,7 +364,7 @@ func (s *DirectPaymentService) validateBalance(
 	asset *data.Asset,
 	amount string,
 ) error {
-	amountFloat, err := strconv.ParseFloat(amount, 64)
+	requestedAmount, err := decimal.NewFromString(amount)
 	if err != nil {
 		return fmt.Errorf("parsing amount: %w", err)
 	}
@@ -358,10 +403,11 @@ func (s *DirectPaymentService) validateBalance(
 		return fmt.Errorf("calculating pending amounts: %w", err)
 	}
 
-	if availableBalance < (amountFloat + totalPending) {
+	requiredAmount := requestedAmount.Add(totalPending)
+	if availableBalance.LessThan(requiredAmount) {
 		return InsufficientBalanceForDirectPaymentError{
 			Asset:              *asset,
-			RequestedAmount:    amountFloat,
+			RequestedAmount:    requestedAmount,
 			AvailableBalance:   availableBalance,
 			TotalPendingAmount: totalPending,
 		}
@@ -374,26 +420,26 @@ func (s *DirectPaymentService) calculatePendingAmountForAsset(
 	ctx context.Context,
 	dbTx db.DBTransaction,
 	targetAsset data.Asset,
-) (float64, error) {
+) (decimal.Decimal, error) {
 	pendingPayments, err := s.Models.Payment.GetAll(ctx, &data.QueryParams{
 		Filters: map[data.FilterKey]any{
 			data.FilterKeyStatus: data.PaymentInProgressStatuses(),
 		},
 	}, dbTx, data.QueryTypeSelectAll)
 	if err != nil {
-		return 0, fmt.Errorf("getting pending payments: %w", err)
+		return decimal.Zero, fmt.Errorf("getting pending payments: %w", err)
 	}
 
-	totalPending := 0.0
+	totalPending := decimal.Zero
 	for _, payment := range pendingPayments {
 		if payment.Asset.Equals(targetAsset) {
-			amount, parseErr := strconv.ParseFloat(payment.Amount, 64)
+			amount, parseErr := decimal.NewFromString(payment.Amount)
 			if parseErr != nil {
 				log.Ctx(ctx).Warnf("Failed to parse payment amount %s for payment %s: %v",
 					payment.Amount, payment.ID, parseErr)
 				continue
 			}
-			totalPending += amount
+			totalPending = totalPending.Add(amount)
 		}
 	}
 
@@ -414,7 +460,8 @@ func (s *DirectPaymentService) checkTrustlineExists(
 		AccountID: account.Address,
 	})
 	if err != nil {
-		if horizonErr, ok := err.(*horizonclient.Error); ok {
+		var horizonErr *horizonclient.Error
+		if errors.As(err, &horizonErr) {
 			if horizonErr.Response.StatusCode == 404 {
 				return false, AccountNotFoundError{Address: account.Address}
 			}

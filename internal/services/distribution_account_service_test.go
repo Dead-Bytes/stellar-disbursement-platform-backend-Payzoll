@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"github.com/stellar/go/clients/horizonclient"
 	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/protocols/horizon"
@@ -30,14 +31,14 @@ func Test_DistributionAccountServiceOptions_Validate(t *testing.T) {
 		{
 			name:          "🔴returns error if Horizon client is nil",
 			opts:          DistributionAccountServiceOptions{},
-			expectedError: "Horizon client cannot be nil",
+			expectedError: "horizon client cannot be nil",
 		},
 		{
 			name: "🔴returns error if Circle service is nil",
 			opts: DistributionAccountServiceOptions{
 				HorizonClient: &horizonclient.Client{},
 			},
-			expectedError: "Circle service cannot be nil",
+			expectedError: "circle service cannot be nil",
 		},
 		{
 			name: "🔴returns error if network type is invalid",
@@ -80,7 +81,7 @@ func Test_StellarDistributionAccountService_GetBalances(t *testing.T) {
 
 	testCases := []struct {
 		name                string
-		expectedBalances    map[data.Asset]float64
+		expectedBalances    map[data.Asset]decimal.Decimal
 		expectedError       error
 		mockHorizonClientFn func(mHorizonClient *horizonclient.MockClient)
 	}{
@@ -102,9 +103,9 @@ func Test_StellarDistributionAccountService_GetBalances(t *testing.T) {
 					},
 				}, nil).Once()
 			},
-			expectedBalances: map[data.Asset]float64{
-				usdcAsset:   100.0,
-				nativeAsset: 100000.0,
+			expectedBalances: map[data.Asset]decimal.Decimal{
+				usdcAsset:   decimal.RequireFromString("100.0000000"),
+				nativeAsset: decimal.RequireFromString("100000.0000000"),
 			},
 		},
 		{
@@ -117,7 +118,7 @@ func Test_StellarDistributionAccountService_GetBalances(t *testing.T) {
 			expectedError: errors.New("getting details for account from Horizon: foobar"),
 		},
 		{
-			name: "🔴returns error when attempting to parse invalid balance into float",
+			name: "🔴returns error when attempting to parse invalid balance into decimal",
 			mockHorizonClientFn: func(mHorizonClient *horizonclient.MockClient) {
 				mHorizonClient.On("AccountDetail", horizonclient.AccountRequest{
 					AccountID: distAcc.Address,
@@ -130,7 +131,7 @@ func Test_StellarDistributionAccountService_GetBalances(t *testing.T) {
 					},
 				}, nil).Once()
 			},
-			expectedError: errors.New("parsing balance to float"),
+			expectedError: errors.New("parsing balance invalid_balance to decimal"),
 		},
 	}
 
@@ -184,18 +185,18 @@ func Test_StellarDistributionAccountService_GetBalance(t *testing.T) {
 	testCases := []struct {
 		name            string
 		asset           data.Asset
-		expectedBalance float64
+		expectedBalance decimal.Decimal
 		expectedError   error
 	}{
 		{
 			name:            "🟢successfully gets balance for asset with issuer",
 			asset:           usdcAsset,
-			expectedBalance: 100.0,
+			expectedBalance: decimal.RequireFromString("100.0000000"),
 		},
 		{
 			name:            "🟢successfully gets balance for native asset",
 			asset:           nativeAsset,
-			expectedBalance: 120.0,
+			expectedBalance: decimal.RequireFromString("120.0000000"),
 		},
 		{
 			name:          "🔴returns error if asset is not found on account",
@@ -238,7 +239,7 @@ func Test_CircleDistributionAccountService_GetBalances(t *testing.T) {
 		networkType      utils.NetworkType
 		account          schema.TransactionAccount
 		prepareMocksFn   func(mCircleService *circle.MockService)
-		expectedBalances map[data.Asset]float64
+		expectedBalances map[data.Asset]decimal.Decimal
 		expectedError    error
 	}{
 		{
@@ -255,7 +256,7 @@ func Test_CircleDistributionAccountService_GetBalances(t *testing.T) {
 				Type:           schema.DistributionAccountCircleDBVault,
 				Status:         schema.AccountStatusPendingUserActivation,
 			},
-			expectedError: fmt.Errorf("This organization's distribution account is in %s state, please complete the %s activation process to access this endpoint.", schema.AccountStatusPendingUserActivation, schema.CirclePlatform),
+			expectedError: fmt.Errorf("this organization's distribution account is in %s state, please complete the %s activation process to access this endpoint", schema.AccountStatusPendingUserActivation, schema.CirclePlatform),
 		},
 		{
 			name:        "🔴wrap error comming from GetWalletByID",
@@ -286,9 +287,9 @@ func Test_CircleDistributionAccountService_GetBalances(t *testing.T) {
 					}, nil).
 					Once()
 			},
-			expectedBalances: map[data.Asset]float64{
-				assets.USDCAssetTestnet: 100.0,
-				assets.EURCAssetTestnet: 200.0,
+			expectedBalances: map[data.Asset]decimal.Decimal{
+				assets.USDCAssetTestnet: decimal.RequireFromString("100.0"),
+				assets.EURCAssetTestnet: decimal.RequireFromString("200.0"),
 			},
 		},
 		{
@@ -307,9 +308,9 @@ func Test_CircleDistributionAccountService_GetBalances(t *testing.T) {
 					}, nil).
 					Once()
 			},
-			expectedBalances: map[data.Asset]float64{
-				assets.USDCAssetPubnet: 100.0,
-				assets.EURCAssetPubnet: 200.0,
+			expectedBalances: map[data.Asset]decimal.Decimal{
+				assets.USDCAssetPubnet: decimal.RequireFromString("100.0"),
+				assets.EURCAssetPubnet: decimal.RequireFromString("200.0"),
 			},
 		},
 	}
@@ -363,7 +364,7 @@ func Test_CircleDistributionAccountService_GetBalance(t *testing.T) {
 		account         schema.TransactionAccount
 		asset           data.Asset
 		prepareMocksFn  func(mCircleService *circle.MockService)
-		expectedBalance float64
+		expectedBalance decimal.Decimal
 		expectedError   error
 	}{
 		{
@@ -387,7 +388,7 @@ func Test_CircleDistributionAccountService_GetBalance(t *testing.T) {
 			account:         circleDistAcc,
 			asset:           assets.USDCAssetTestnet,
 			prepareMocksFn:  mockGetGetBusinessBalancesFn,
-			expectedBalance: 100.0,
+			expectedBalance: decimal.RequireFromString("100.0"),
 		},
 		{
 			name:            "🟢[Pubnet]successfully gets balance for supported asset EURC",
@@ -395,7 +396,7 @@ func Test_CircleDistributionAccountService_GetBalance(t *testing.T) {
 			account:         circleDistAcc,
 			asset:           assets.EURCAssetPubnet,
 			prepareMocksFn:  mockGetGetBusinessBalancesFn,
-			expectedBalance: 200.0,
+			expectedBalance: decimal.RequireFromString("200.0"),
 		},
 	}
 

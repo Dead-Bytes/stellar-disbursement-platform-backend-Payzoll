@@ -13,6 +13,7 @@ import (
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
 	"github.com/stellar/stellar-disbursement-platform-backend/db/router"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httpclient"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httphandler"
 	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
@@ -47,27 +48,27 @@ type IntegrationTestsOpts struct {
 	ReceiverAccountStellarMemo string
 	Sep10SigningPublicKey      string
 	RecaptchaSiteKey           string
-	AnchorPlatformBaseSepURL   string
-	ServerApiBaseURL           string
+	ServerAPIBaseURL           string
 	AdminServerBaseURL         string
-	AdminServerAccountId       string
-	AdminServerApiKey          string
+	AdminServerAccountID       string
+	AdminServerAPIKey          string
 	CircleUSDCWalletID         string
 	CircleAPIKey               string
 	HorizonURL                 string
 	NetworkPassphrase          string
+	SingleTenantMode           bool
 }
 
 type IntegrationTestsService struct {
 	models                *data.Models
-	adminDbConnectionPool db.DBConnectionPool
-	mtnDbConnectionPool   db.DBConnectionPool
-	tssDbConnectionPool   db.DBConnectionPool
+	adminDBConnectionPool db.DBConnectionPool
+	mtnDBConnectionPool   db.DBConnectionPool
+	tssDBConnectionPool   db.DBConnectionPool
 	tenantManager         *tenant.Manager
-	serverAPI             ServerApiIntegrationTestsInterface
-	adminAPI              AdminApiIntegrationTestsInterface
-	anchorPlatform        AnchorPlatformIntegrationTestsInterface
+	serverAPI             ServerAPIIntegrationTestsInterface
+	adminAPI              AdminAPIIntegrationTestsInterface
 	horizonClient         horizonclient.ClientInterface
+	sdpSepServices        SDPSepServicesIntegrationTestsInterface
 }
 
 // NewIntegrationTestsService is a function that create a new IntegrationTestsService instance.
@@ -76,17 +77,17 @@ func NewIntegrationTestsService(opts IntegrationTestsOpts) (*IntegrationTestsSer
 	if err != nil {
 		return nil, fmt.Errorf("getting admin database DSN: %w", err)
 	}
-	adminDbConnectionPool, err := db.OpenDBConnectionPool(adminDSN)
+	adminDBConnectionPool, err := db.OpenDBConnectionPool(adminDSN)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to the database: %w", err)
 	}
-	tm := tenant.NewManager(tenant.WithDatabase(adminDbConnectionPool))
+	tm := tenant.NewManager(tenant.WithDatabase(adminDBConnectionPool))
 	tr := tenant.NewMultiTenantDataSourceRouter(tm)
-	mtnDbConnectionPool, err := db.NewConnectionPoolWithRouter(tr)
+	mtnDBConnectionPool, err := db.NewConnectionPoolWithRouter(tr)
 	if err != nil {
 		return nil, fmt.Errorf("getting multi-tenant database connection pool: %w", err)
 	}
-	models, err := data.NewModels(mtnDbConnectionPool)
+	models, err := data.NewModels(mtnDBConnectionPool)
 	if err != nil {
 		return nil, fmt.Errorf("creating models for integration tests: %w", err)
 	}
@@ -94,24 +95,24 @@ func NewIntegrationTestsService(opts IntegrationTestsOpts) (*IntegrationTestsSer
 	if err != nil {
 		return nil, fmt.Errorf("getting TSS database DSN: %w", err)
 	}
-	tssDbConnectionPool, err := db.OpenDBConnectionPool(tssDSN)
+	tssDBConnectionPool, err := db.OpenDBConnectionPool(tssDSN)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to the tss database: %w", err)
 	}
 	it := &IntegrationTestsService{
 		models:                models,
-		adminDbConnectionPool: adminDbConnectionPool,
-		mtnDbConnectionPool:   mtnDbConnectionPool,
-		tssDbConnectionPool:   tssDbConnectionPool,
+		adminDBConnectionPool: adminDBConnectionPool,
+		mtnDBConnectionPool:   mtnDBConnectionPool,
+		tssDBConnectionPool:   tssDBConnectionPool,
 		tenantManager:         tm,
 	}
 
 	// initialize admin api integration tests service
-	it.adminAPI = &AdminApiIntegrationTests{
-		HttpClient:      httpclient.DefaultClient(),
-		AdminApiBaseURL: opts.AdminServerBaseURL,
-		AccountId:       opts.AdminServerAccountId,
-		ApiKey:          opts.AdminServerApiKey,
+	it.adminAPI = &AdminAPIIntegrationTests{
+		HTTPClient:      httpclient.DefaultClient(),
+		AdminAPIBaseURL: opts.AdminServerBaseURL,
+		AccountID:       opts.AdminServerAccountID,
+		APIKey:          opts.AdminServerAPIKey,
 	}
 
 	return it, nil
@@ -124,22 +125,23 @@ func (it *IntegrationTestsService) initServices(_ context.Context, opts Integrat
 		HTTP:       httpclient.DefaultClient(),
 	}
 
-	// initialize anchor platform integration tests service
-	it.anchorPlatform = &AnchorPlatformIntegrationTests{
-		HttpClient:                httpclient.DefaultClient(),
+	it.sdpSepServices = &SDPSepServicesIntegrationTests{
+		HTTPClient:                httpclient.DefaultClient(),
+		SDPBaseURL:                opts.ServerAPIBaseURL,
 		TenantName:                opts.TenantName,
-		AnchorPlatformBaseSepURL:  opts.AnchorPlatformBaseSepURL,
 		ReceiverAccountPublicKey:  opts.ReceiverAccountPublicKey,
 		ReceiverAccountPrivateKey: opts.ReceiverAccountPrivateKey,
 		Sep10SigningPublicKey:     opts.Sep10SigningPublicKey,
 		DisbursedAssetCode:        opts.DisbursedAssetCode,
+		NetworkPassphrase:         opts.NetworkPassphrase,
+		SingleTenantMode:          opts.SingleTenantMode,
 	}
 
 	// initialize server api integration tests service
-	it.serverAPI = &ServerApiIntegrationTests{
-		HttpClient:              httpclient.DefaultClient(),
+	it.serverAPI = &ServerAPIIntegrationTests{
+		HTTPClient:              httpclient.DefaultClient(),
 		TenantName:              opts.TenantName,
-		ServerApiBaseURL:        opts.ServerApiBaseURL,
+		ServerAPIBaseURL:        opts.ServerAPIBaseURL,
 		UserEmail:               opts.UserEmail,
 		UserPassword:            opts.UserPassword,
 		DisbursementCSVFilePath: opts.DisbursementCSVFilePath,
@@ -156,7 +158,7 @@ func (it *IntegrationTestsService) StartIntegrationTests(ctx context.Context, op
 	if err != nil {
 		return fmt.Errorf("getting tenant %s from database: %w", opts.TenantName, err)
 	}
-	ctx = tenant.SaveTenantInContext(ctx, t)
+	ctx = sdpcontext.SetTenantInContext(ctx, t)
 
 	log.Ctx(ctx).Info("Login user to get server API auth token")
 	authToken, err := it.serverAPI.Login(ctx)
@@ -189,7 +191,7 @@ func (it *IntegrationTestsService) StartIntegrationTests(ctx context.Context, op
 }
 
 // createAndValidateDisbursement is a function that creates a disbursement and validates it.
-func (it *IntegrationTestsService) createAndValidateDisbursement(ctx context.Context, opts IntegrationTestsOpts, authToken *ServerApiAuthToken, asset *data.Asset) (*data.Disbursement, error) {
+func (it *IntegrationTestsService) createAndValidateDisbursement(ctx context.Context, opts IntegrationTestsOpts, authToken *ServerAPIAuthToken, asset *data.Asset) (*data.Disbursement, error) {
 	var (
 		verificationField data.VerificationType
 		walletID          string
@@ -222,8 +224,15 @@ func (it *IntegrationTestsService) createAndValidateDisbursement(ctx context.Con
 	}
 
 	log.Ctx(ctx).Info("Validating disbursement data after processing the disbursement file...")
-	if err = validateExpectationsAfterProcessDisbursement(ctx, disbursement.ID, it.models, it.mtnDbConnectionPool); err != nil {
+	if err = validateExpectationsAfterProcessDisbursement(ctx, disbursement.ID, it.models, it.mtnDBConnectionPool); err != nil {
 		return nil, fmt.Errorf("validating data after process disbursement: %w", err)
+	}
+
+	if !opts.RegistrationContactType.IncludesWalletAddress {
+		log.Ctx(ctx).Info("Creating receiver wallets for SEP-24 registration flow...")
+		if err = it.createReceiverWalletsForSEP24(ctx, disbursement.ID, walletID); err != nil {
+			return nil, fmt.Errorf("creating receiver wallets for SEP-24: %w", err)
+		}
 	}
 
 	log.Ctx(ctx).Info("Starting disbursement using server API...")
@@ -232,68 +241,96 @@ func (it *IntegrationTestsService) createAndValidateDisbursement(ctx context.Con
 	}
 
 	log.Ctx(ctx).Info("Validating disbursement data after starting disbursement using server API...")
-	if err = validateExpectationsAfterStartDisbursement(ctx, disbursement.ID, it.models, it.mtnDbConnectionPool); err != nil {
+	if err = validateExpectationsAfterStartDisbursement(ctx, disbursement.ID, it.models, it.mtnDBConnectionPool); err != nil {
 		return nil, fmt.Errorf("validating data after process disbursement: %w", err)
 	}
 	return disbursement, nil
 }
 
-// registerReceiverWalletIfNeeded is a function that registers the receiver wallet through the SEP-24 flow if needed,
-// i.e. if the registration contact type does not include the wallet address.
 func (it *IntegrationTestsService) registerReceiverWalletIfNeeded(ctx context.Context, opts IntegrationTestsOpts, disbursement *data.Disbursement) error {
 	if disbursement.RegistrationContactType.IncludesWalletAddress {
 		log.Ctx(ctx).Infof("⏭ Skipping SEP-24 flow because registrationContactType=%q", disbursement.RegistrationContactType)
 		return nil
 	}
 
-	log.Ctx(ctx).Info("Starting challenge transaction on anchor platform")
-	challengeTx, err := it.anchorPlatform.StartChallengeTransaction()
-	if err != nil {
-		return fmt.Errorf("creating SEP10 challenge transaction: %w", err)
-	}
+	return it.registerWithInternalSEP(ctx, opts, disbursement)
+}
 
-	log.Ctx(ctx).Info("Signing challenge transaction with Sep10SigningKey")
-	signedTx, err := it.anchorPlatform.SignChallengeTransaction(challengeTx)
-	if err != nil {
-		return fmt.Errorf("signing SEP10 challenge transaction: %w", err)
-	}
+func (it *IntegrationTestsService) registerWithInternalSEP(ctx context.Context, opts IntegrationTestsOpts, disbursement *data.Disbursement) error {
+	log.Ctx(ctx).Info("Starting SEP-10 authentication with SDP internal service")
 
-	log.Ctx(ctx).Info("Sending challenge transaction to anchor platform")
-	authSEP10Token, err := it.anchorPlatform.SendSignedChallengeTransaction(signedTx)
+	// Step 1: Get SEP-10 challenge
+	challenge, err := it.sdpSepServices.GetSEP10Challenge(ctx)
 	if err != nil {
-		return fmt.Errorf("sending SEP10 challenge transaction: %w", err)
+		return fmt.Errorf("getting SEP-10 challenge: %w", err)
 	}
+	log.Ctx(ctx).Info("Received SEP-10 challenge from SDP")
 
-	log.Ctx(ctx).Info("Creating SEP24 deposit transaction on anchor platform")
-	authSEP24Token, _, err := it.anchorPlatform.CreateSep24DepositTransaction(authSEP10Token)
+	// Step 2: Sign challenge
+	signedChallenge, err := it.sdpSepServices.SignSEP10Challenge(challenge)
 	if err != nil {
-		return fmt.Errorf("creating SEP24 deposit transaction: %w", err)
+		return fmt.Errorf("signing SEP-10 challenge: %w", err)
 	}
+	log.Ctx(ctx).Info("Signed SEP-10 challenge")
 
+	// Step 3: Validate and get JWT token
+	sep10Token, err := it.sdpSepServices.ValidateSEP10Challenge(ctx, signedChallenge)
+	if err != nil {
+		return fmt.Errorf("validating SEP-10 challenge: %w", err)
+	}
+	log.Ctx(ctx).Info("Received SEP-10 JWT token")
+
+	// Step 4: Initiate SEP-24 deposit
+	depositResp, err := it.sdpSepServices.InitiateSEP24Deposit(ctx, sep10Token)
+	if err != nil {
+		return fmt.Errorf("initiating SEP-24 deposit: %w", err)
+	}
+	log.Ctx(ctx).Infof("Initiated SEP-24 deposit, transaction ID: %s", depositResp.TransactionID)
+
+	// Step 5: Check transaction status (should be incomplete initially)
+	txStatus, err := it.sdpSepServices.GetSEP24Transaction(ctx, sep10Token, depositResp.TransactionID)
+	if err != nil {
+		return fmt.Errorf("checking transaction status: %w", err)
+	}
+	log.Ctx(ctx).Infof("Transaction status: %s", txStatus.Transaction.Status)
+
+	// Step 6: Read disbursement instructions
 	disbursementInstructions, err := readDisbursementCSV(opts.DisbursementCSVFilePath, opts.DisbursementCSVFileName)
 	if err != nil {
 		return fmt.Errorf("reading disbursement CSV: %w", err)
 	}
 
-	log.Ctx(ctx).Info("Completing receiver registration using server API")
-	err = it.serverAPI.ReceiverRegistration(ctx, authSEP24Token, &data.ReceiverRegistrationRequest{
+	// Step 7: Complete registration
+	registrationData := &ReceiverRegistrationRequest{
 		OTP:               data.TestnetAlwaysValidOTP,
 		PhoneNumber:       disbursementInstructions[0].Phone,
 		Email:             disbursementInstructions[0].Email,
 		VerificationValue: disbursementInstructions[0].VerificationValue,
-		VerificationField: disbursement.VerificationField,
+		VerificationField: string(disbursement.VerificationField),
 		ReCAPTCHAToken:    opts.RecaptchaSiteKey,
-	})
-	if err != nil {
-		return fmt.Errorf("registring receiver: %w", err)
 	}
 
-	log.Ctx(ctx).Info("Validating receiver data after completing registration")
-	err = validateExpectationsAfterReceiverRegistration(ctx, it.models, opts.ReceiverAccountPublicKey, opts.ReceiverAccountStellarMemo, opts.WalletSEP10Domain)
+	if err = it.sdpSepServices.CompleteReceiverRegistration(ctx, depositResp.Token, registrationData); err != nil {
+		return fmt.Errorf("completing receiver registration: %w", err)
+	}
+	log.Ctx(ctx).Info("Completed receiver registration")
+
+	// Step 8: Verify transaction is completed
+	txStatus, err = it.sdpSepServices.GetSEP24Transaction(ctx, sep10Token, depositResp.TransactionID)
 	if err != nil {
+		return fmt.Errorf("checking final transaction status: %w", err)
+	}
+
+	if txStatus.Transaction.Status != "completed" {
+		return fmt.Errorf("transaction not completed, status: %s", txStatus.Transaction.Status)
+	}
+
+	// Step 9: Validate registration in database
+	if err = validateExpectationsAfterReceiverRegistration(ctx, it.models, opts.ReceiverAccountPublicKey, opts.ReceiverAccountStellarMemo, opts.WalletSEP10Domain); err != nil {
 		return fmt.Errorf("validating receiver after registration: %w", err)
 	}
 
+	log.Ctx(ctx).Info("✅ SEP-24 registration completed successfully")
 	return nil
 }
 
@@ -308,7 +345,7 @@ func (it *IntegrationTestsService) ensureTransactionCompletion(ctx context.Conte
 	err := retry.Do(
 		func() error {
 			var innerErr error
-			receivers, innerErr = it.models.DisbursementReceivers.GetAll(ctx, it.mtnDbConnectionPool, &data.QueryParams{}, disbursement.ID)
+			receivers, innerErr = it.models.DisbursementReceivers.GetAll(ctx, it.mtnDBConnectionPool, &data.QueryParams{}, disbursement.ID)
 			if innerErr != nil {
 				return fmt.Errorf("getting receivers: %w", innerErr)
 			}
@@ -357,9 +394,55 @@ func (it *IntegrationTestsService) ensureTransactionCompletion(ctx context.Conte
 	return nil
 }
 
+// createReceiverWalletsForSEP24 creates receiver wallet records for each receiver in the disbursement
+// to enable SEP-24 registration flow
+func (it *IntegrationTestsService) createReceiverWalletsForSEP24(ctx context.Context, disbursementID, walletID string) error {
+	// Get all receivers from the disbursement
+	receivers, err := it.models.DisbursementReceivers.GetAll(ctx, it.mtnDBConnectionPool, &data.QueryParams{}, disbursementID)
+	if err != nil {
+		return fmt.Errorf("getting receivers from disbursement: %w", err)
+	}
+
+	// Create receiver wallet for each receiver
+	for _, receiver := range receivers {
+		// Check if receiver wallet already exists
+		existingWallets, err := it.models.ReceiverWallet.GetWithReceiverIDs(ctx, it.mtnDBConnectionPool, data.ReceiverIDs{receiver.ID})
+		if err != nil {
+			return fmt.Errorf("checking existing receiver wallets for receiver %s: %w", receiver.ID, err)
+		}
+
+		// If no receiver wallet exists for this receiver and wallet, create one
+		walletExists := false
+		for _, existingWallet := range existingWallets {
+			if existingWallet.Wallet.ID == walletID {
+				walletExists = true
+				break
+			}
+		}
+
+		if !walletExists {
+			log.Ctx(ctx).Infof("Creating receiver wallet for receiver %s with wallet %s", receiver.ID, walletID)
+			_, err = it.models.ReceiverWallet.GetOrInsertReceiverWallet(ctx, it.mtnDBConnectionPool, data.ReceiverWalletInsert{
+				ReceiverID: receiver.ID,
+				WalletID:   walletID,
+			})
+			if err != nil {
+				return fmt.Errorf("creating receiver wallet for receiver %s: %w", receiver.ID, err)
+			}
+		}
+	}
+
+	log.Ctx(ctx).Infof("Successfully created receiver wallets for %d receivers", len(receivers))
+	return nil
+}
+
 func (it *IntegrationTestsService) CreateTestData(ctx context.Context, opts IntegrationTestsOpts) error {
 	// 1. Create new tenant and add owner user
 	distributionAccType := schema.AccountType(opts.DistributionAccountType)
+
+	// Use 3-part domain with tenant name for proper tenant extraction in SEP-24
+	baseURL := fmt.Sprintf("http://%s.stellar.local:8000", opts.TenantName)
+
 	t, err := it.adminAPI.CreateTenant(ctx, CreateTenantRequest{
 		Name:                    opts.TenantName,
 		OwnerEmail:              opts.UserEmail,
@@ -367,14 +450,14 @@ func (it *IntegrationTestsService) CreateTestData(ctx context.Context, opts Inte
 		OwnerLastName:           "Doe",
 		OrganizationName:        "Integration Tests Organization",
 		DistributionAccountType: distributionAccType,
-		BaseURL:                 "http://localhost:8000",
+		BaseURL:                 baseURL,
 		SDPUIBaseURL:            "http://localhost:3000",
 	})
 	if err != nil {
 		return fmt.Errorf("creating tenant: %w", err)
 	}
 
-	ctx = tenant.SaveTenantInContext(ctx, t)
+	ctx = sdpcontext.SetTenantInContext(ctx, t)
 
 	// 2. Reset password for the user
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(opts.UserPassword), bcrypt.DefaultCost)
@@ -382,7 +465,7 @@ func (it *IntegrationTestsService) CreateTestData(ctx context.Context, opts Inte
 		return fmt.Errorf("hashing owner user password: %w", err)
 	}
 	query := `UPDATE auth_users SET encrypted_password = $1 WHERE email = $2`
-	_, err = it.mtnDbConnectionPool.ExecContext(ctx, query, hashedPassword, opts.UserEmail)
+	_, err = it.mtnDBConnectionPool.ExecContext(ctx, query, hashedPassword, opts.UserEmail)
 	if err != nil {
 		return fmt.Errorf("updating owner user password: %w", err)
 	}

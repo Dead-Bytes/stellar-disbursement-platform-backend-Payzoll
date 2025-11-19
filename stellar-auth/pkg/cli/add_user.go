@@ -14,6 +14,8 @@ import (
 
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
 	"github.com/stellar/stellar-disbursement-platform-backend/db/router"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
+	sdpUtils "github.com/stellar/stellar-disbursement-platform-backend/internal/utils"
 	"github.com/stellar/stellar-disbursement-platform-backend/stellar-auth/pkg/auth"
 	"github.com/stellar/stellar-disbursement-platform-backend/stellar-auth/pkg/utils"
 	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
@@ -103,9 +105,9 @@ func AddUserCmd(databaseURLFlagName string, passwordPrompt PasswordPromptInterfa
 		Run: func(cmd *cobra.Command, args []string) {
 			ctx := cmd.Context()
 
-			dbUrl := globalOptions.databaseURL
-			if dbUrl == "" {
-				dbUrl = viper.GetString(databaseURLFlagName)
+			dbURL := globalOptions.databaseURL
+			if dbURL == "" {
+				dbURL = viper.GetString(databaseURLFlagName)
 			}
 
 			email, firstName, lastName := args[0], args[1], args[2]
@@ -129,7 +131,7 @@ func AddUserCmd(databaseURLFlagName string, passwordPrompt PasswordPromptInterfa
 				password = result
 			}
 
-			err := execAddUser(ctx, dbUrl, email, firstName, lastName, password, isOwner, rolesConfigKey, tenantID)
+			err := execAddUser(ctx, dbURL, email, firstName, lastName, password, isOwner, rolesConfigKey, tenantID)
 			if err != nil {
 				log.Ctx(ctx).Fatalf("add-user command error: %s", err)
 			}
@@ -156,9 +158,9 @@ func NewDefaultPasswordPrompt() *promptui.Prompt {
 
 // execAddUser creates a new user and inserts it into the database, the user will have
 // it's password encrypted for security reasons.
-func execAddUser(ctx context.Context, dbUrl string, email, firstName, lastName, password string, isOwner bool, roles []string, tenantID string) error {
+func execAddUser(ctx context.Context, dbURL string, email, firstName, lastName, password string, isOwner bool, roles []string, tenantID string) error {
 	// 1. Get Tenant and save it in context
-	adminDSN, err := router.GetDSNForAdmin(dbUrl)
+	adminDSN, err := router.GetDSNForAdmin(dbURL)
 	if err != nil {
 		return fmt.Errorf("getting Admin database DSN: %w", err)
 	}
@@ -166,13 +168,13 @@ func execAddUser(ctx context.Context, dbUrl string, email, firstName, lastName, 
 	if err != nil {
 		return fmt.Errorf("opening Admin DB connection pool: %w", err)
 	}
-	defer adminDBConnectionPool.Close()
+	defer sdpUtils.DeferredClose(ctx, adminDBConnectionPool, "closing admin db connection pool")
 	tm := tenant.NewManager(tenant.WithDatabase(adminDBConnectionPool))
 	t, err := tm.GetTenantByID(ctx, tenantID)
 	if err != nil {
 		return fmt.Errorf("error getting tenant by id %s: %w", tenantID, err)
 	}
-	ctx = tenant.SaveTenantInContext(ctx, t)
+	ctx = sdpcontext.SetTenantInContext(ctx, t)
 
 	// 2. Create user using multi-tenant connection pool
 	tr := tenant.NewMultiTenantDataSourceRouter(tm)
@@ -180,7 +182,7 @@ func execAddUser(ctx context.Context, dbUrl string, email, firstName, lastName, 
 	if err != nil {
 		return fmt.Errorf("getting dbConnectionPool in execAddUser: %w", err)
 	}
-	defer dbConnectionPool.Close()
+	defer sdpUtils.DeferredClose(ctx, dbConnectionPool, "closing db connection pool")
 
 	authManager := auth.NewAuthManager(
 		auth.WithDefaultAuthenticatorOption(dbConnectionPool, auth.NewDefaultPasswordEncrypter(), 0),

@@ -2,7 +2,8 @@ package httphandler
 
 import (
 	"context"
-	"errors"
+	crand "crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,18 +13,17 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/stellar/go/support/log"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stellar/go/keypair"
+	"github.com/stellar/go/strkey"
 
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
 	"github.com/stellar/stellar-disbursement-platform-backend/db/dbtest"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/crashtracker"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/events"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/events/schemas"
-	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
+	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
 )
 
 func Test_RetryInvitation(t *testing.T) {
@@ -36,8 +36,8 @@ func Test_RetryInvitation(t *testing.T) {
 
 	models, err := data.NewModels(dbConnectionPool)
 	require.NoError(t, err)
-	tnt := tenant.Tenant{ID: "tenant-id"}
-	ctx := tenant.SaveTenantInContext(context.Background(), &tnt)
+	tnt := schema.Tenant{ID: "tenant-id"}
+	ctx := sdpcontext.SetTenantInContext(context.Background(), &tnt)
 
 	t.Run("returns error when receiver wallet does not exist", func(t *testing.T) {
 		handler := ReceiverWalletsHandler{Models: models}
@@ -56,32 +56,9 @@ func Test_RetryInvitation(t *testing.T) {
 		assert.JSONEq(t, `{ "error": "Resource not found." }`, rr.Body.String())
 	})
 
-	t.Run("returns error when tenant is not in the context", func(t *testing.T) {
-		handler := ReceiverWalletsHandler{Models: models}
-		r := chi.NewRouter()
-		r.Patch("/receivers/wallets/{receiver_wallet_id}", handler.RetryInvitation)
-
-		receiver := data.CreateReceiverFixture(t, ctx, dbConnectionPool, &data.Receiver{})
-		wallet := data.CreateWalletFixture(t, ctx, dbConnectionPool, "wallet", "https://www.wallet.com", "www.wallet.com", "wallet://")
-		rw := data.CreateReceiverWalletFixture(t, ctx, dbConnectionPool, receiver.ID, wallet.ID, data.ReadyReceiversWalletStatus)
-
-		route := fmt.Sprintf("/receivers/wallets/%s", rw.ID)
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodPatch, route, nil)
-		require.NoError(t, err)
-
-		rr := httptest.NewRecorder()
-		r.ServeHTTP(rr, req)
-
-		resp := rr.Result()
-		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-		assert.JSONEq(t, `{ "error": "You don't have permission to perform this action." }`, rr.Body.String())
-	})
-
 	t.Run("successfuly retry invitation", func(t *testing.T) {
-		eventProducerMock := events.NewMockProducer(t)
 		handler := ReceiverWalletsHandler{
-			Models:        models,
-			EventProducer: eventProducerMock,
+			Models: models,
 		}
 		r := chi.NewRouter()
 		r.Patch("/receivers/wallets/{receiver_wallet_id}", handler.RetryInvitation)
@@ -89,23 +66,6 @@ func Test_RetryInvitation(t *testing.T) {
 		receiver := data.CreateReceiverFixture(t, ctx, dbConnectionPool, &data.Receiver{})
 		wallet := data.CreateWalletFixture(t, ctx, dbConnectionPool, "wallet", "https://www.wallet.com", "www.wallet.com", "wallet://")
 		rw := data.CreateReceiverWalletFixture(t, ctx, dbConnectionPool, receiver.ID, wallet.ID, data.ReadyReceiversWalletStatus)
-
-		eventProducerMock.
-			On("WriteMessages", mock.Anything, []events.Message{
-				{
-					Topic:    events.ReceiverWalletNewInvitationTopic,
-					Key:      rw.ID,
-					TenantID: tnt.ID,
-					Type:     events.RetryReceiverWalletInvitationType,
-					Data: []schemas.EventReceiverWalletInvitationData{
-						{
-							ReceiverWalletID: rw.ID,
-						},
-					},
-				},
-			}).
-			Return(nil).
-			Once()
 
 		route := fmt.Sprintf("/receivers/wallets/%s", rw.ID)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, route, nil)
@@ -114,7 +74,7 @@ func Test_RetryInvitation(t *testing.T) {
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 
-		wantJson := fmt.Sprintf(`{
+		wantJSON := fmt.Sprintf(`{
 			"id": %q,
 			"receiver_id": %q,
 			"wallet_id": %q,
@@ -124,113 +84,7 @@ func Test_RetryInvitation(t *testing.T) {
 
 		resp := rr.Result()
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.JSONEq(t, wantJson, rr.Body.String())
-	})
-
-	t.Run("returns error when fails writing message on message broker", func(t *testing.T) {
-		crashTrackerMock := &crashtracker.MockCrashTrackerClient{}
-		defer crashTrackerMock.AssertExpectations(t)
-		eventProducerMock := events.NewMockProducer(t)
-		handler := ReceiverWalletsHandler{
-			Models:             models,
-			EventProducer:      eventProducerMock,
-			CrashTrackerClient: crashTrackerMock,
-		}
-		r := chi.NewRouter()
-		r.Patch("/receivers/wallets/{receiver_wallet_id}", handler.RetryInvitation)
-
-		receiver := data.CreateReceiverFixture(t, ctx, dbConnectionPool, &data.Receiver{})
-		wallet := data.CreateWalletFixture(t, ctx, dbConnectionPool, "wallet", "https://www.wallet.com", "www.wallet.com", "wallet://")
-		rw := data.CreateReceiverWalletFixture(t, ctx, dbConnectionPool, receiver.ID, wallet.ID, data.ReadyReceiversWalletStatus)
-
-		eventProducerMock.
-			On("WriteMessages", mock.Anything, []events.Message{
-				{
-					Topic:    events.ReceiverWalletNewInvitationTopic,
-					Key:      rw.ID,
-					TenantID: tnt.ID,
-					Type:     events.RetryReceiverWalletInvitationType,
-					Data: []schemas.EventReceiverWalletInvitationData{
-						{
-							ReceiverWalletID: rw.ID,
-						},
-					},
-				},
-			}).
-			Return(errors.New("unexpected error")).
-			Once()
-
-		crashTrackerMock.
-			On("LogAndReportErrors", mock.Anything, mock.AnythingOfType("*fmt.wrapError"), "writing retry invitation message on the event producer").
-			Return().
-			Once()
-
-		route := fmt.Sprintf("/receivers/wallets/%s", rw.ID)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, route, nil)
-		require.NoError(t, err)
-
-		rr := httptest.NewRecorder()
-		r.ServeHTTP(rr, req)
-
-		resp := rr.Result()
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		wantJson := fmt.Sprintf(`{
-			"id": %q,
-			"receiver_id": %q,
-			"wallet_id": %q,
-			"created_at": %q,
-			"invitation_sent_at": null
-		}`, rw.ID, receiver.ID, wallet.ID, rw.CreatedAt.Format(time.RFC3339Nano))
-		assert.JSONEq(t, wantJson, rr.Body.String())
-	})
-
-	t.Run("logs when couldn't write message because EventProducer is nil", func(t *testing.T) {
-		handler := ReceiverWalletsHandler{Models: models}
-		r := chi.NewRouter()
-		r.Patch("/receivers/wallets/{receiver_wallet_id}", handler.RetryInvitation)
-
-		receiver := data.CreateReceiverFixture(t, ctx, dbConnectionPool, &data.Receiver{})
-		wallet := data.CreateWalletFixture(t, ctx, dbConnectionPool, "wallet", "https://www.wallet.com", "www.wallet.com", "wallet://")
-		rw := data.CreateReceiverWalletFixture(t, ctx, dbConnectionPool, receiver.ID, wallet.ID, data.ReadyReceiversWalletStatus)
-
-		router := chi.NewRouter()
-		router.Patch("/receivers/wallets/{receiver_wallet_id}", handler.RetryInvitation)
-
-		getEntries := log.DefaultLogger.StartTest(log.ErrorLevel)
-
-		// Assert no receivers were registered
-		route := fmt.Sprintf("/receivers/wallets/%s", rw.ID)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, route, nil)
-		require.NoError(t, err)
-
-		rr := httptest.NewRecorder()
-		router.ServeHTTP(rr, req)
-
-		wantJson := fmt.Sprintf(`{
-			"id": %q,
-			"receiver_id": %q,
-			"wallet_id": %q,
-			"created_at": %q,
-			"invitation_sent_at": null
-		}`, rw.ID, receiver.ID, wallet.ID, rw.CreatedAt.Format(time.RFC3339Nano))
-
-		resp := rr.Result()
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.JSONEq(t, wantJson, rr.Body.String())
-
-		msg := events.Message{
-			Topic:    events.ReceiverWalletNewInvitationTopic,
-			Key:      rw.ID,
-			TenantID: tnt.ID,
-			Type:     events.RetryReceiverWalletInvitationType,
-			Data: []schemas.EventReceiverWalletInvitationData{
-				{ReceiverWalletID: rw.ID},
-			},
-		}
-
-		entries := getEntries()
-		require.Len(t, entries, 1)
-		assert.Equal(t, fmt.Sprintf("event producer is nil, could not publish messages %+v", []events.Message{msg}), entries[0].Message)
+		assert.JSONEq(t, wantJSON, rr.Body.String())
 	})
 }
 
@@ -443,4 +297,245 @@ func Test_ReceiverWalletsHandler_PatchReceiverWalletStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_ReceiverWalletsHandler_PatchReceiverWallet_DuplicateStellarAddress(t *testing.T) {
+	dbt := dbtest.Open(t)
+	defer dbt.Close()
+
+	dbConnectionPool, err := db.OpenDBConnectionPool(dbt.DSN)
+	require.NoError(t, err)
+	defer dbConnectionPool.Close()
+
+	models, err := data.NewModels(dbConnectionPool)
+	require.NoError(t, err)
+	tnt := schema.Tenant{ID: "tenant-id"}
+	ctx := sdpcontext.SetTenantInContext(context.Background(), &tnt)
+
+	receiver1 := data.CreateReceiverFixture(t, ctx, dbConnectionPool, &data.Receiver{})
+	receiver2 := data.CreateReceiverFixture(t, ctx, dbConnectionPool, &data.Receiver{})
+
+	// user managed wallet for receiver1
+	userManagedWallet := data.CreateWalletFixture(t, ctx, dbConnectionPool, "User Managed Wallet", "stellar.org", "stellar.org", "stellar://")
+	data.MakeWalletUserManaged(t, ctx, dbConnectionPool, userManagedWallet.ID)
+
+	// wallet for receiver2
+	wallet := data.CreateWalletFixture(t, ctx, dbConnectionPool, "Wallet", "https://www.wallet.com", "www.wallet.com", "wallet://")
+
+	// Create receiver wallets
+	rw1 := data.CreateReceiverWalletFixture(t, ctx, dbConnectionPool, receiver1.ID, userManagedWallet.ID, data.DraftReceiversWalletStatus)
+	rw2 := data.CreateReceiverWalletFixture(t, ctx, dbConnectionPool, receiver2.ID, wallet.ID, data.RegisteredReceiversWalletStatus)
+
+	handler := ReceiverWalletsHandler{Models: models}
+	router := chi.NewRouter()
+	router.Patch("/receivers/{receiver_id}/wallets/{receiver_wallet_id}", handler.PatchReceiverWallet)
+
+	t.Run("patch receiver1 with new stellar address succeeds", func(t *testing.T) {
+		newStellarAddress := "GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3B2WSQHG4W37"
+		reqBody := fmt.Sprintf(`{"stellar_address": "%s"}`, newStellarAddress)
+		route := fmt.Sprintf("/receivers/%s/wallets/%s", receiver1.ID, rw1.ID)
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, route, strings.NewReader(reqBody))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		resp := rr.Result()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+
+		var responseData map[string]interface{}
+		err = json.Unmarshal(respBody, &responseData)
+		require.NoError(t, err)
+
+		assert.Equal(t, newStellarAddress, responseData["stellar_address"])
+	})
+
+	t.Run("patch receiver1 with receiver2's stellar address triggers conflict", func(t *testing.T) {
+		reqBody := fmt.Sprintf(`{"stellar_address": "%s"}`, rw2.StellarAddress)
+		route := fmt.Sprintf("/receivers/%s/wallets/%s", receiver1.ID, rw1.ID)
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, route, strings.NewReader(reqBody))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		resp := rr.Result()
+		assert.Equal(t, http.StatusConflict, resp.StatusCode)
+
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+
+		expectedJSON := `{
+			"error": "The provided wallet address is already associated with another user.",
+			"extras": {
+				"wallet_address": "wallet address must be unique"
+			}
+		}`
+
+		assert.JSONEq(t, expectedJSON, string(respBody))
+	})
+
+	t.Run("receiver_wallet_id doesn't belong to receiver_id returns error", func(t *testing.T) {
+		reqBody := fmt.Sprintf(`{"stellar_address": "%s"}`, rw2.StellarAddress)
+		route := fmt.Sprintf("/receivers/%s/wallets/%s", receiver1.ID, rw2.ID)
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, route, strings.NewReader(reqBody))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		resp := rr.Result()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+
+		assert.Contains(t, string(respBody), "Receiver wallet does not belong to the specified receiver")
+	})
+}
+
+func Test_ReceiverwalletsHandler_PatchReceiverWallet_MemoValidation(t *testing.T) {
+	dbt := dbtest.Open(t)
+	defer dbt.Close()
+
+	dbConnectionPool, err := db.OpenDBConnectionPool(dbt.DSN)
+	require.NoError(t, err)
+	defer dbConnectionPool.Close()
+
+	models, err := data.NewModels(dbConnectionPool)
+	require.NoError(t, err)
+	tnt := schema.Tenant{ID: "tenant-id"}
+	ctx := sdpcontext.SetTenantInContext(context.Background(), &tnt)
+
+	handler := ReceiverWalletsHandler{Models: models}
+	router := chi.NewRouter()
+	router.Patch("/receivers/{receiver_id}/wallets/{receiver_wallet_id}", handler.PatchReceiverWallet)
+
+	createUserManagedReceiverWallet := func(t *testing.T, status data.ReceiversWalletStatus) (*data.Receiver, *data.ReceiverWallet) {
+		t.Helper()
+
+		wallet := data.CreateWalletFixture(t, ctx, dbConnectionPool, "User Managed Wallet", "stellar.org", "stellar.org", "stellar://")
+		data.MakeWalletUserManaged(t, ctx, dbConnectionPool, wallet.ID)
+		receiver := data.CreateReceiverFixture(t, ctx, dbConnectionPool, &data.Receiver{})
+		rw := data.CreateReceiverWalletFixture(t, ctx, dbConnectionPool, receiver.ID, wallet.ID, status)
+
+		return receiver, rw
+	}
+
+	doPatch := func(body string, receiverID string, receiverWalletID string) (*http.Response, []byte) {
+		req, requestErr := http.NewRequestWithContext(ctx, http.MethodPatch,
+			fmt.Sprintf("/receivers/%s/wallets/%s", receiverID, receiverWalletID), strings.NewReader(body))
+		require.NoError(t, requestErr)
+		req.Header.Set("Content-Type", "application/json")
+
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		resp := rr.Result()
+		payload, readErr := io.ReadAll(resp.Body)
+		require.NoError(t, readErr)
+
+		return resp, payload
+	}
+
+	generateAccountAddress := func(t *testing.T) string {
+		t.Helper()
+		return keypair.MustRandom().Address()
+	}
+
+	generateContractAddress := func(t *testing.T) string {
+		t.Helper()
+
+		payload := make([]byte, 32)
+		_, randErr := crand.Read(payload)
+		require.NoError(t, randErr)
+
+		addr, encodeErr := strkey.Encode(strkey.VersionByteContract, payload)
+		require.NoError(t, encodeErr)
+
+		return addr
+	}
+
+	t.Run("accepts contract address without memo", func(t *testing.T) {
+		receiver, rw := createUserManagedReceiverWallet(t, data.DraftReceiversWalletStatus)
+		contractAddress := generateContractAddress(t)
+
+		resp, payload := doPatch(fmt.Sprintf(`{"stellar_address": "%s"}`, contractAddress), receiver.ID, rw.ID)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var responseData map[string]interface{}
+		unmarshalErr := json.Unmarshal(payload, &responseData)
+		require.NoError(t, unmarshalErr)
+		assert.Equal(t, contractAddress, responseData["stellar_address"])
+	})
+
+	t.Run("allows switching from contract address to account address with memo", func(t *testing.T) {
+		receiver, rw := createUserManagedReceiverWallet(t, data.DraftReceiversWalletStatus)
+		currentContract := generateContractAddress(t)
+
+		resp, payload := doPatch(fmt.Sprintf(`{"stellar_address": "%s"}`, currentContract), receiver.ID, rw.ID)
+		require.Equal(t, http.StatusOK, resp.StatusCode, string(payload))
+
+		newAccountAddress := generateAccountAddress(t)
+		memo := "987654321"
+
+		resp, payload = doPatch(fmt.Sprintf(`{"stellar_address": "%s","stellar_memo":"%s"}`, newAccountAddress, memo), receiver.ID, rw.ID)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var responseData map[string]interface{}
+		unmarshalErr := json.Unmarshal(payload, &responseData)
+		require.NoError(t, unmarshalErr)
+		assert.Equal(t, newAccountAddress, responseData["stellar_address"])
+		assert.Equal(t, memo, responseData["stellar_memo"])
+		assert.Equal(t, string(schema.MemoTypeID), responseData["stellar_memo_type"])
+	})
+
+	t.Run("requires clearing memo before switching to contract address", func(t *testing.T) {
+		receiver, rw := createUserManagedReceiverWallet(t, data.RegisteredReceiversWalletStatus)
+		require.NotEmpty(t, rw.StellarMemo)
+
+		contractAddress := generateContractAddress(t)
+
+		resp, payload := doPatch(fmt.Sprintf(`{"stellar_address": "%s"}`, contractAddress), receiver.ID, rw.ID)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.JSONEq(t, `{"error":"Clear memo before assigning a contract address"}`, string(payload))
+	})
+
+	t.Run("rejects memo payload when assigning contract address", func(t *testing.T) {
+		receiver, rw := createUserManagedReceiverWallet(t, data.DraftReceiversWalletStatus)
+
+		contractAddress := generateContractAddress(t)
+
+		resp, payload := doPatch(fmt.Sprintf(`{"stellar_address": "%s","stellar_memo":"memo-value"}`, contractAddress), receiver.ID, rw.ID)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.JSONEq(t, `{"error":"Memos are not supported for contract addresses"}`, string(payload))
+	})
+
+	t.Run("allows clearing memo when switching to contract address", func(t *testing.T) {
+		receiver, rw := createUserManagedReceiverWallet(t, data.RegisteredReceiversWalletStatus)
+		require.NotEmpty(t, rw.StellarMemo)
+
+		contractAddress := generateContractAddress(t)
+
+		resp, payload := doPatch(fmt.Sprintf(`{"stellar_address": "%s","stellar_memo":""}`, contractAddress), receiver.ID, rw.ID)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var responseData map[string]interface{}
+		unmarshalErr := json.Unmarshal(payload, &responseData)
+		require.NoError(t, unmarshalErr)
+		assert.Equal(t, contractAddress, responseData["stellar_address"])
+		_, memoPresent := responseData["stellar_memo"]
+		assert.False(t, memoPresent)
+		_, memoTypePresent := responseData["stellar_memo_type"]
+		assert.False(t, memoTypePresent)
+	})
 }

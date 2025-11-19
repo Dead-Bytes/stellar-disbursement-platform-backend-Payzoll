@@ -24,10 +24,10 @@ import (
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/monitor"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
 	ctxHelper "github.com/stellar/stellar-disbursement-platform-backend/internal/serve/auth"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httperror"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httpresponse"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/middleware"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/validators"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/services"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/transactionsubmission/engine/signing"
@@ -178,17 +178,23 @@ func (d DisbursementHandler) createNewDisbursement(ctx context.Context, sqlExec 
 		return nil, httperror.InternalError(ctx, msg, err, nil)
 	}
 
-	// Monitor disbursement creation
-	labels := monitor.DisbursementLabels{
-		Asset:  newDisbursement.Asset.Code,
-		Wallet: newDisbursement.Wallet.Name,
-	}
-	err = d.MonitorService.MonitorCounters(monitor.DisbursementsCounterTag, labels.ToMap())
-	if err != nil {
-		log.Ctx(ctx).Errorf("Error trying to monitor disbursement counter: %s", err)
-	}
+	d.recordCreateDisbursementMetrics(ctx, newDisbursement)
 
 	return newDisbursement, nil
+}
+
+func (d DisbursementHandler) recordCreateDisbursementMetrics(ctx context.Context, disbursement *data.Disbursement) {
+	labels := monitor.DisbursementLabels{
+		Asset:  disbursement.Asset.Code,
+		Wallet: disbursement.Wallet.Name,
+		CommonLabels: monitor.CommonLabels{
+			TenantName: sdpcontext.MustGetTenantNameFromContext(ctx),
+		},
+	}
+
+	if err := d.MonitorService.MonitorCounters(monitor.DisbursementsCounterTag, labels.ToMap()); err != nil {
+		log.Ctx(ctx).Errorf("Error trying to monitor disbursement counter: %s", err)
+	}
 }
 
 // DeleteDisbursement deletes a draft or ready disbursement and its associated payments
@@ -315,9 +321,9 @@ func (d DisbursementHandler) PostDisbursementInstructions(w http.ResponseWriter,
 }
 
 func (d DisbursementHandler) validateAndProcessInstructions(ctx context.Context, r *http.Request, dbTx db.DBTransaction, authUser *auth.User, disbursement *data.Disbursement) error {
-	buf, header, parseHttpErr := parseCsvFromMultipartRequest(r)
-	if parseHttpErr != nil {
-		return fmt.Errorf("could not parse csv file: %w", parseHttpErr)
+	buf, header, parseHTTPErr := parseCsvFromMultipartRequest(r)
+	if parseHTTPErr != nil {
+		return fmt.Errorf("could not parse csv file: %w", parseHTTPErr)
 	}
 
 	if err := validateCSVHeaders(bytes.NewReader(buf.Bytes()), disbursement.RegistrationContactType); err != nil {
@@ -352,6 +358,8 @@ func (d DisbursementHandler) validateAndProcessInstructions(ctx context.Context,
 			return httperror.BadRequest(errors.Unwrap(err).Error(), err, nil)
 		case errors.Is(err, data.ErrReceiverWalletAddressMismatch):
 			return httperror.BadRequest(errors.Unwrap(err).Error(), err, nil)
+		case errors.Is(err, data.ErrDuplicateWalletAddress):
+			return httperror.Conflict(err.Error(), err, nil)
 		default:
 			return httperror.InternalError(ctx, fmt.Sprintf("Cannot process instructions for disbursement with ID %s", disbursement.ID), err, nil)
 		}
@@ -368,7 +376,7 @@ func parseCsvFromMultipartRequest(r *http.Request) (*bytes.Buffer, *multipart.Fi
 	if err != nil {
 		return nil, nil, httperror.BadRequest("could not parse file", err, nil)
 	}
-	defer file.Close()
+	defer utils.DeferredClose(r.Context(), file, "closing file")
 
 	if err = utils.ValidatePathIsNotTraversal(header.Filename); err != nil {
 		return nil, nil, httperror.BadRequest("file name contains invalid traversal pattern", nil, nil)
@@ -478,13 +486,15 @@ func (d DisbursementHandler) PatchDisbursementStatus(w http.ResponseWriter, r *h
 
 	disbursementID := chi.URLParam(r, "id")
 
-	token, ok := ctx.Value(middleware.TokenContextKey).(string)
-	if !ok {
+	token, err := sdpcontext.GetTokenFromContext(ctx)
+	if err != nil {
 		httperror.InternalError(ctx, "Cannot get token from context", err, nil).Render(w)
+		return
 	}
 	user, err := d.AuthManager.GetUser(ctx, token)
 	if err != nil {
 		httperror.InternalError(ctx, "Cannot get user from token", err, nil).Render(w)
+		return
 	}
 
 	switch toStatus {

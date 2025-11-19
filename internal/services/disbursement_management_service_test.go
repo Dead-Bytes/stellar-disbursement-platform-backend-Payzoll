@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shopspring/decimal"
 	"github.com/stellar/go/clients/horizonclient"
 	"github.com/stellar/go/protocols/horizon"
 	"github.com/stellar/go/protocols/horizon/base"
@@ -18,18 +19,14 @@ import (
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
 	"github.com/stellar/stellar-disbursement-platform-backend/db/dbtest"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/circle"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/crashtracker"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/events"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/events/schemas"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/middleware"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/services/assets"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/services/mocks"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/testutils"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/utils"
 	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
 	"github.com/stellar/stellar-disbursement-platform-backend/stellar-auth/pkg/auth"
-	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
 )
 
 func Test_DisbursementManagementService_GetDisbursementsWithCount(t *testing.T) {
@@ -213,10 +210,10 @@ func Test_DisbursementManagementService_StartDisbursement_success(t *testing.T) 
 	wallet := data.CreateDefaultWalletFixture(t, ctx, dbConnectionPool)
 
 	// Update context with tenant and auth token
-	tnt := tenant.Tenant{ID: "tenant-id"}
-	ctx = tenant.SaveTenantInContext(context.Background(), &tnt)
+	tnt := schema.Tenant{ID: "tenant-id"}
+	ctx = sdpcontext.SetTenantInContext(context.Background(), &tnt)
 	token := "token"
-	ctx = context.WithValue(ctx, middleware.TokenContextKey, token)
+	ctx = sdpcontext.SetTokenInContext(ctx, token)
 
 	// Create distribution accounts
 	distributionAccPubKey := "GAAHIL6ZW4QFNLCKALZ3YOIWPP4TXQ7B7J5IU7RLNVGQAV6GFDZHLDTA"
@@ -393,57 +390,6 @@ func Test_DisbursementManagementService_StartDisbursement_success(t *testing.T) 
 			mCircleService := circle.NewMockService(t)
 			tc.prepareMocksFn(mHorizonClient, mCircleService)
 
-			// Create mocks: events producer
-			mEventProducer := events.NewMockProducer(t)
-			mEventProducer.
-				On("WriteMessages", ctx, mock.AnythingOfType("[]events.Message")).
-				Run(func(args mock.Arguments) {
-					msgs, ok := args.Get(1).([]events.Message)
-					require.True(t, ok)
-					require.Len(t, msgs, 2)
-
-					// Validating send invite msg
-					sendInviteMsg := msgs[0]
-					assert.Equal(t, events.ReceiverWalletNewInvitationTopic, sendInviteMsg.Topic)
-					assert.Equal(t, readyDisbursement.ID, sendInviteMsg.Key)
-					assert.Equal(t, events.BatchReceiverWalletInvitationType, sendInviteMsg.Type)
-					assert.Equal(t, tnt.ID, sendInviteMsg.TenantID)
-
-					eventData, ok := sendInviteMsg.Data.([]schemas.EventReceiverWalletInvitationData)
-					require.True(t, ok)
-					require.Len(t, eventData, 2)
-					wantElements := []schemas.EventReceiverWalletInvitationData{
-						{ReceiverWalletID: rwDraft.ID}, // <--- invitation for the receiver that is being included in the system for the first time
-						{ReceiverWalletID: rwReady.ID}, // <--- invitation for the receiver that is already in the system but doesn't have a Stellar wallet yet
-					}
-					assert.ElementsMatch(t, wantElements, eventData)
-
-					var expectedTopic string
-					switch tc.distributionAccount.Type.Platform() {
-					case schema.CirclePlatform:
-						expectedTopic = events.CirclePaymentReadyToPayTopic
-					case schema.StellarPlatform:
-						expectedTopic = events.PaymentReadyToPayTopic
-					}
-
-					// Validating payments ready to pay msg
-					paymentsReadyToPayMsg := msgs[1]
-					assert.Equal(t, events.Message{
-						Topic:    expectedTopic,
-						Key:      readyDisbursement.ID,
-						TenantID: tnt.ID,
-						Type:     events.PaymentReadyToPayDisbursementStarted,
-						Data: schemas.EventPaymentsReadyToPayData{
-							TenantID: tnt.ID,
-							Payments: []schemas.PaymentReadyToPay{
-								{ID: pRegistered.ID},
-							},
-						},
-					}, paymentsReadyToPayMsg)
-				}).
-				Return(nil).
-				Once()
-
 			// Setup dependent services
 			distAccSvc, err := NewDistributionAccountService(DistributionAccountServiceOptions{
 				HorizonClient: mHorizonClient,
@@ -453,7 +399,6 @@ func Test_DisbursementManagementService_StartDisbursement_success(t *testing.T) 
 			require.NoError(t, err)
 			service := &DisbursementManagementService{
 				Models:                     models,
-				EventProducer:              mEventProducer,
 				DistributionAccountService: distAccSvc,
 			}
 
@@ -501,10 +446,10 @@ func Test_DisbursementManagementService_StartDisbursement_failure(t *testing.T) 
 	models, err := data.NewModels(dbConnectionPool)
 	require.NoError(t, err)
 
-	tnt := tenant.Tenant{ID: "tenant-id"}
-	ctx := tenant.SaveTenantInContext(context.Background(), &tnt)
+	tnt := schema.Tenant{ID: "tenant-id"}
+	ctx := sdpcontext.SetTenantInContext(context.Background(), &tnt)
 	token := "token"
-	ctx = context.WithValue(ctx, middleware.TokenContextKey, token)
+	ctx = sdpcontext.SetTokenInContext(ctx, token)
 
 	// Create fixtures: asset, wallet
 	asset := data.GetAssetFixture(t, ctx, dbConnectionPool, data.FixtureAssetUSDC)
@@ -525,21 +470,8 @@ func Test_DisbursementManagementService_StartDisbursement_failure(t *testing.T) 
 	// Create fixtures: receivers, receiver wallets
 	receiverReady := data.CreateReceiverFixture(t, ctx, dbConnectionPool, &data.Receiver{})
 	rwReady := data.CreateReceiverWalletFixture(t, ctx, dbConnectionPool, receiverReady.ID, wallet.ID, data.ReadyReceiversWalletStatus)
-	receiverRegistered := data.CreateReceiverFixture(t, ctx, dbConnectionPool, &data.Receiver{})
-	rwRegistered := data.CreateReceiverWalletFixture(t, ctx, dbConnectionPool, receiverRegistered.ID, wallet.ID, data.RegisteredReceiversWalletStatus)
 
 	hAccRequest := horizonclient.AccountRequest{AccountID: distributionAccPubKey}
-	hAccResponse := horizon.Account{
-		Balances: []horizon.Balance{
-			{
-				Balance: "10000000",
-				Asset: base.Asset{
-					Code:   asset.Code,
-					Issuer: asset.Issuer,
-				},
-			},
-		},
-	}
 
 	t.Run("returns an error if the disbursement doesn't exist", func(t *testing.T) {
 		service := DisbursementManagementService{Models: models}
@@ -604,7 +536,7 @@ func Test_DisbursementManagementService_StartDisbursement_failure(t *testing.T) 
 		require.NoError(t, err)
 	})
 
-	t.Run("returns an error if the distribution account has insuficcient balance", func(t *testing.T) {
+	t.Run("returns an error if the distribution account has insufficient balance", func(t *testing.T) {
 		usdt := data.CreateAssetFixture(t, ctx, dbConnectionPool, "USDT", "GBVHJTRLQRMIHRYTXZQOPVYCVVH7IRJN3DOFT7VC6U75CBWWBVDTWURG")
 
 		disbursement := data.CreateDisbursementFixture(t, ctx, dbConnectionPool, models.Disbursements, &data.Disbursement{
@@ -688,9 +620,9 @@ func Test_DisbursementManagementService_StartDisbursement_failure(t *testing.T) 
 			DisbursementAsset:   *usdt,
 			DistributionAddress: distributionAcc.ID(),
 			DisbursementID:      disbursementInsufficientBalance.ID,
-			AvailableBalance:    11111.0,
-			DisbursementAmount:  22222.0,
-			TotalPendingAmount:  1100.0,
+			AvailableBalance:    decimal.NewFromFloat(11111.0),
+			DisbursementAmount:  decimal.NewFromFloat(22222.0),
+			TotalPendingAmount:  decimal.NewFromFloat(1100.0),
 		}
 
 		require.ErrorContains(t, err, fmt.Sprintf("validating balance for disbursement: %v", expectedErr))
@@ -698,336 +630,6 @@ func Test_DisbursementManagementService_StartDisbursement_failure(t *testing.T) 
 		// PendingTotal includes payments associated with 'readyDisbursement' that were moved from the draft to ready status
 		expectedErrStr := fmt.Sprintf("the disbursement %s failed due to an account balance (11111.00) that was insufficient to fulfill new amount (22222.00) along with the pending amount (1100.00). To complete this action, your distribution account (stellar:GAAHIL6ZW4QFNLCKALZ3YOIWPP4TXQ7B7J5IU7RLNVGQAV6GFDZHLDTA) needs to be recharged with at least 12211.00 USDT", disbursementInsufficientBalance.ID)
 		assert.Contains(t, buf.String(), expectedErrStr)
-	})
-
-	t.Run("logs and reports to the crashTracker when the eventProducer fails", func(t *testing.T) {
-		userID := "9ae68f09-cad9-4311-9758-4ff59d2e9e6d"
-		statusHistory := []data.DisbursementStatusHistoryEntry{
-			{
-				Status: data.DraftDisbursementStatus,
-				UserID: userID,
-			},
-			{
-				Status: data.ReadyDisbursementStatus,
-				UserID: userID,
-			},
-		}
-		disbursement := data.CreateDisbursementFixture(t, ctx, dbConnectionPool, models.Disbursements, &data.Disbursement{
-			Name:          "disbursement #3",
-			Status:        data.ReadyDisbursementStatus,
-			Asset:         asset,
-			Wallet:        wallet,
-			StatusHistory: statusHistory,
-		})
-
-		payment := data.CreatePaymentFixture(t, ctx, dbConnectionPool, models.Payment, &data.Payment{
-			ReceiverWallet: rwRegistered,
-			Disbursement:   disbursement,
-			Asset:          *asset,
-			Amount:         "100",
-			Status:         data.ReadyPaymentStatus,
-		})
-
-		_ = data.CreatePaymentFixture(t, ctx, dbConnectionPool, models.Payment, &data.Payment{
-			ReceiverWallet: rwReady,
-			Disbursement:   disbursement,
-			Asset:          *asset,
-			Amount:         "100",
-			Status:         data.ReadyPaymentStatus,
-		})
-
-		expectedMessages := []events.Message{
-			{
-				Topic:    events.ReceiverWalletNewInvitationTopic,
-				Key:      disbursement.ID,
-				TenantID: tnt.ID,
-				Type:     events.BatchReceiverWalletInvitationType,
-				Data: []schemas.EventReceiverWalletInvitationData{
-					{ReceiverWalletID: rwReady.ID}, // Receiver that can receive SMS
-				},
-			},
-			{
-				Topic:    events.PaymentReadyToPayTopic,
-				Key:      disbursement.ID,
-				TenantID: tnt.ID,
-				Type:     events.PaymentReadyToPayDisbursementStarted,
-				Data: schemas.EventPaymentsReadyToPayData{
-					TenantID: tnt.ID,
-					Payments: []schemas.PaymentReadyToPay{
-						{ID: payment.ID},
-					},
-				},
-			},
-		}
-
-		// Create Mocks
-		hMock := &horizonclient.MockClient{}
-		defer hMock.AssertExpectations(t)
-		hMock.On("AccountDetail", hAccRequest).Return(hAccResponse, nil).Once()
-		producerErr := errors.New("unexpected WriteMessages error")
-		mockEventProducer := events.NewMockProducer(t)
-		mockEventProducer.
-			On("WriteMessages", ctx, expectedMessages).
-			Return(producerErr).
-			Once()
-		mCrashTracker := &crashtracker.MockCrashTrackerClient{}
-		mCrashTracker.
-			On("LogAndReportErrors", mock.Anything, mock.Anything, "writing messages after disbursement start on event producer").
-			Run(func(args mock.Arguments) {
-				err := args.Get(1).(error)
-				assert.ErrorIs(t, err, producerErr)
-			}).
-			Once()
-
-		// Setup dependent services
-		distAccSvc, err := NewDistributionAccountService(DistributionAccountServiceOptions{
-			HorizonClient: hMock,
-			CircleService: &circle.Service{},
-			NetworkType:   utils.TestnetNetworkType,
-		})
-		require.NoError(t, err)
-
-		// Create service
-		service := &DisbursementManagementService{
-			Models:                     models,
-			EventProducer:              mockEventProducer,
-			CrashTrackerClient:         mCrashTracker,
-			DistributionAccountService: distAccSvc,
-		}
-
-		user := &auth.User{
-			ID:    "user-id",
-			Email: "email@email.com",
-		}
-
-		err = service.StartDisbursement(ctx, disbursement.ID, user, &distributionAcc)
-		assert.NoError(t, err)
-	})
-
-	t.Run("doesn't produce message when there are no payments ready to pay", func(t *testing.T) {
-		userID := "9ae68f09-cad9-4311-9758-4ff59d2e9e6d"
-		statusHistory := []data.DisbursementStatusHistoryEntry{
-			{
-				Status: data.DraftDisbursementStatus,
-				UserID: userID,
-			},
-			{
-				Status: data.ReadyDisbursementStatus,
-				UserID: userID,
-			},
-		}
-		disbursement := data.CreateDisbursementFixture(t, context.Background(), dbConnectionPool, models.Disbursements, &data.Disbursement{
-			Name:          "disbursement with no payments ready to pay",
-			Status:        data.ReadyDisbursementStatus,
-			Asset:         asset,
-			Wallet:        wallet,
-			StatusHistory: statusHistory,
-		})
-
-		_ = data.CreatePaymentFixture(t, ctx, dbConnectionPool, models.Payment, &data.Payment{
-			ReceiverWallet: rwReady,
-			Disbursement:   disbursement,
-			Asset:          *asset,
-			Amount:         "100",
-			Status:         data.ReadyPaymentStatus,
-		})
-
-		// Create Mocks
-		hMock := &horizonclient.MockClient{}
-		defer hMock.AssertExpectations(t)
-		hMock.On("AccountDetail", hAccRequest).Return(hAccResponse, nil).Once()
-		mockEventProducer := events.NewMockProducer(t)
-		mockEventProducer.
-			On("WriteMessages", ctx, []events.Message{
-				{
-					Topic:    events.ReceiverWalletNewInvitationTopic,
-					Key:      disbursement.ID,
-					TenantID: tnt.ID,
-					Type:     events.BatchReceiverWalletInvitationType,
-					Data: []schemas.EventReceiverWalletInvitationData{
-						{ReceiverWalletID: rwReady.ID}, // Receiver that can receive SMS
-					},
-				},
-			}).
-			Return(nil).
-			Once()
-
-		// Setup dependent services
-		distAccSvc, err := NewDistributionAccountService(DistributionAccountServiceOptions{
-			HorizonClient: hMock,
-			CircleService: &circle.Service{},
-			NetworkType:   utils.TestnetNetworkType,
-		})
-		require.NoError(t, err)
-
-		// Create service
-		service := &DisbursementManagementService{
-			Models:                     models,
-			EventProducer:              mockEventProducer,
-			DistributionAccountService: distAccSvc,
-		}
-
-		getEntries := log.DefaultLogger.StartTest(log.InfoLevel)
-
-		user := &auth.User{ID: "user-id", Email: "email@email.com"}
-
-		err = service.StartDisbursement(ctx, disbursement.ID, user, &distributionAcc)
-		require.NoError(t, err)
-
-		entries := getEntries()
-		require.Len(t, entries, 5)
-		assert.Contains(t, fmt.Sprintf("no payments ready to pay for disbursement ID %s", disbursement.ID), entries[3].Message)
-	})
-
-	t.Run("returns error when tenant is not in the context", func(t *testing.T) {
-		ctxWithoutTenant := context.Background()
-
-		userID := "9ae68f09-cad9-4311-9758-4ff59d2e9e6d"
-		statusHistory := []data.DisbursementStatusHistoryEntry{
-			{
-				Status: data.DraftDisbursementStatus,
-				UserID: userID,
-			},
-			{
-				Status: data.ReadyDisbursementStatus,
-				UserID: userID,
-			},
-		}
-		disbursement := data.CreateDisbursementFixture(t, ctxWithoutTenant, dbConnectionPool, models.Disbursements, &data.Disbursement{
-			Name:          "disbursement #5",
-			Status:        data.ReadyDisbursementStatus,
-			Asset:         asset,
-			Wallet:        wallet,
-			StatusHistory: statusHistory,
-		})
-
-		_ = data.CreatePaymentFixture(t, ctxWithoutTenant, dbConnectionPool, models.Payment, &data.Payment{
-			ReceiverWallet: rwRegistered,
-			Disbursement:   disbursement,
-			Asset:          *asset,
-			Amount:         "100",
-			Status:         data.ReadyPaymentStatus,
-		})
-
-		user := &auth.User{ID: "user-id", Email: "email@email.com"}
-
-		// Create Mocks
-		hMock := &horizonclient.MockClient{}
-		defer hMock.AssertExpectations(t)
-		hMock.On("AccountDetail", hAccRequest).Return(hAccResponse, nil).Once()
-
-		// Setup dependent services
-		distAccSvc, err := NewDistributionAccountService(DistributionAccountServiceOptions{
-			HorizonClient: hMock,
-			CircleService: &circle.Service{},
-			NetworkType:   utils.TestnetNetworkType,
-		})
-		require.NoError(t, err)
-
-		// Create service
-		service := &DisbursementManagementService{
-			Models:                     models,
-			DistributionAccountService: distAccSvc,
-		}
-
-		err = service.StartDisbursement(ctxWithoutTenant, disbursement.ID, user, &distributionAcc)
-		assert.ErrorContains(t, err, "creating new message: getting tenant from context: tenant not found in context")
-	})
-
-	t.Run("logs when couldn't write message because EventProducer is nil", func(t *testing.T) {
-		userID := "9ae68f09-cad9-4311-9758-4ff59d2e9e6d"
-		statusHistory := []data.DisbursementStatusHistoryEntry{
-			{
-				Status: data.DraftDisbursementStatus,
-				UserID: userID,
-			},
-			{
-				Status: data.ReadyDisbursementStatus,
-				UserID: userID,
-			},
-		}
-		disbursement := data.CreateDisbursementFixture(t, ctx, dbConnectionPool, models.Disbursements, &data.Disbursement{
-			Name:          "disbursement #6",
-			Status:        data.ReadyDisbursementStatus,
-			Asset:         asset,
-			Wallet:        wallet,
-			StatusHistory: statusHistory,
-		})
-
-		paymentReady := data.CreatePaymentFixture(t, ctx, dbConnectionPool, models.Payment, &data.Payment{
-			ReceiverWallet: rwRegistered,
-			Disbursement:   disbursement,
-			Asset:          *asset,
-			Amount:         "100",
-			Status:         data.ReadyPaymentStatus,
-		})
-
-		_ = data.CreatePaymentFixture(t, ctx, dbConnectionPool, models.Payment, &data.Payment{
-			ReceiverWallet: rwReady,
-			Disbursement:   disbursement,
-			Asset:          *asset,
-			Amount:         "100",
-			Status:         data.ReadyPaymentStatus,
-		})
-
-		getEntries := log.DefaultLogger.StartTest(log.ErrorLevel)
-
-		user := &auth.User{ID: "user-id", Email: "email@email.com"}
-
-		// Create Mocks
-		hMock := &horizonclient.MockClient{}
-		defer hMock.AssertExpectations(t)
-		hMock.On("AccountDetail", hAccRequest).Return(hAccResponse, nil).Once()
-
-		// Setup dependent services
-		distAccSvc, err := NewDistributionAccountService(DistributionAccountServiceOptions{
-			HorizonClient: hMock,
-			CircleService: &circle.Service{},
-			NetworkType:   utils.TestnetNetworkType,
-		})
-		require.NoError(t, err)
-
-		// Create service
-		service := &DisbursementManagementService{
-			Models:                     models,
-			EventProducer:              nil, // <----- EventProducer is nil
-			DistributionAccountService: distAccSvc,
-		}
-
-		err = service.StartDisbursement(ctx, disbursement.ID, user, &distributionAcc)
-		require.NoError(t, err)
-
-		msgs := []events.Message{
-			{
-				Topic:    events.ReceiverWalletNewInvitationTopic,
-				Key:      disbursement.ID,
-				TenantID: tnt.ID,
-				Type:     events.BatchReceiverWalletInvitationType,
-				Data: []schemas.EventReceiverWalletInvitationData{
-					{
-						ReceiverWalletID: rwReady.ID,
-					},
-				},
-			},
-			{
-				Topic:    events.PaymentReadyToPayTopic,
-				Key:      disbursement.ID,
-				TenantID: tnt.ID,
-				Type:     events.PaymentReadyToPayDisbursementStarted,
-				Data: schemas.EventPaymentsReadyToPayData{
-					TenantID: tnt.ID,
-					Payments: []schemas.PaymentReadyToPay{
-						{
-							ID: paymentReady.ID,
-						},
-					},
-				},
-			},
-		}
-
-		entries := getEntries()
-		require.Len(t, entries, 1)
-		assert.Contains(t, fmt.Sprintf("event producer is nil, could not publish messages %+v", msgs), entries[0].Message)
 	})
 }
 
@@ -1042,16 +644,13 @@ func Test_DisbursementManagementService_PauseDisbursement(t *testing.T) {
 	models, outerErr := data.NewModels(dbConnectionPool)
 	require.NoError(t, outerErr)
 
-	mockEventProducer := events.MockProducer{}
-	defer mockEventProducer.AssertExpectations(t)
-
 	ctx := context.Background()
 
-	tnt := tenant.Tenant{ID: "tenant-id"}
-	ctx = tenant.SaveTenantInContext(ctx, &tnt)
+	tnt := schema.Tenant{ID: "tenant-id"}
+	ctx = sdpcontext.SetTenantInContext(ctx, &tnt)
 
 	token := "token"
-	ctx = context.WithValue(ctx, middleware.TokenContextKey, token)
+	ctx = sdpcontext.SetTokenInContext(ctx, token)
 
 	user := &auth.User{
 		ID:    "user-id",
@@ -1072,7 +671,6 @@ func Test_DisbursementManagementService_PauseDisbursement(t *testing.T) {
 
 	service := &DisbursementManagementService{
 		Models:                     models,
-		EventProducer:              &mockEventProducer,
 		DistributionAccountService: distAccSvc,
 	}
 
@@ -1183,29 +781,6 @@ func Test_DisbursementManagementService_PauseDisbursement(t *testing.T) {
 			require.Equal(t, data.PausedPaymentStatus, payment.Status)
 		}
 
-		mockEventProducer.
-			On("WriteMessages", ctx, []events.Message{
-				{
-					Topic:    events.PaymentReadyToPayTopic,
-					Key:      startedDisbursement.ID,
-					TenantID: tnt.ID,
-					Type:     events.PaymentReadyToPayDisbursementStarted,
-					Data: schemas.EventPaymentsReadyToPayData{
-						TenantID: tnt.ID,
-						Payments: []schemas.PaymentReadyToPay{
-							{
-								ID: paymentReady1.ID,
-							},
-							{
-								ID: paymentReady2.ID,
-							},
-						},
-					},
-				},
-			}).
-			Return(nil).
-			Once()
-
 		// change the disbursement back to started
 		err = service.StartDisbursement(ctx, startedDisbursement.ID, user, &distributionAcc)
 		require.NoError(t, err)
@@ -1253,29 +828,6 @@ func Test_DisbursementManagementService_PauseDisbursement(t *testing.T) {
 			require.NoError(t, innerErr)
 			require.Equal(t, data.PausedPaymentStatus, payment.Status)
 		}
-
-		mockEventProducer.
-			On("WriteMessages", ctx, []events.Message{
-				{
-					Topic:    events.PaymentReadyToPayTopic,
-					Key:      startedDisbursement.ID,
-					TenantID: tnt.ID,
-					Type:     events.PaymentReadyToPayDisbursementStarted,
-					Data: schemas.EventPaymentsReadyToPayData{
-						TenantID: tnt.ID,
-						Payments: []schemas.PaymentReadyToPay{
-							{
-								ID: paymentReady1.ID,
-							},
-							{
-								ID: paymentReady2.ID,
-							},
-						},
-					},
-				},
-			}).
-			Return(nil).
-			Once()
 
 		// 2. Start disbursement again
 		err = service.StartDisbursement(ctx, startedDisbursement.ID, user, &distributionAcc)
@@ -1352,8 +904,16 @@ func Test_DisbursementManagementService_validateBalanceForDisbursement(t *testin
 		ReceiverWallet: rwReady,
 		Disbursement:   disbursementOld,
 		Asset:          *asset,
-		Amount:         "10",
+		Amount:         "8",
 		Status:         data.PendingPaymentStatus,
+	})
+	// Direct Payment
+	_ = data.CreatePaymentFixture(t, ctx, dbConnectionPool, models.Payment, &data.Payment{
+		ReceiverWallet: rwReady,
+		Asset:          *asset,
+		Amount:         "2",
+		Type:           data.PaymentTypeDirect,
+		Status:         data.ReadyPaymentStatus,
 	})
 	disbursementNew := data.CreateDisbursementFixture(t, ctx, dbConnectionPool, models.Disbursements, &data.Disbursement{
 		Wallet: wallet,
@@ -1385,9 +945,9 @@ func Test_DisbursementManagementService_validateBalanceForDisbursement(t *testin
 			DisbursementAsset:   *asset,
 			DistributionAddress: account.ID(),
 			DisbursementID:      disbursementNew.ID,
-			AvailableBalance:    99.99,
-			DisbursementAmount:  90.00,
-			TotalPendingAmount:  10.00,
+			AvailableBalance:    decimal.NewFromFloat(99.99),
+			DisbursementAmount:  decimal.NewFromFloat(90.00),
+			TotalPendingAmount:  decimal.NewFromFloat(10.00),
 		}
 	}
 
@@ -1405,7 +965,7 @@ func Test_DisbursementManagementService_validateBalanceForDisbursement(t *testin
 			prepareMocksFn: func(mDistAccService *mocks.MockDistributionAccountService) {
 				mDistAccService.
 					On("GetBalance", ctx, &stellarDistAccountEnv, *asset).
-					Return(0.0, errors.New("GetBalance error")).
+					Return(decimal.Zero, errors.New("GetBalance error")).
 					Once()
 			},
 			expectedErrContains: fmt.Sprintf("getting balance for asset (%s,%s) on distribution account %v: GetBalance error", asset.Code, asset.Issuer, stellarDistAccountEnv),
@@ -1416,7 +976,7 @@ func Test_DisbursementManagementService_validateBalanceForDisbursement(t *testin
 			prepareMocksFn: func(mDistAccService *mocks.MockDistributionAccountService) {
 				mDistAccService.
 					On("GetBalance", ctx, &stellarDistAccountEnv, *asset).
-					Return(99.99, nil).
+					Return(decimal.NewFromFloat(99.99), nil).
 					Once()
 			},
 			expectedErrContains: expectedInsufficientBalanceErr(stellarDistAccountEnv).Error(),
@@ -1427,7 +987,7 @@ func Test_DisbursementManagementService_validateBalanceForDisbursement(t *testin
 			prepareMocksFn: func(mDistAccService *mocks.MockDistributionAccountService) {
 				mDistAccService.
 					On("GetBalance", ctx, &stellarDistAccountDBVault, *asset).
-					Return(99.99, nil).
+					Return(decimal.NewFromFloat(99.99), nil).
 					Once()
 			},
 			expectedErrContains: expectedInsufficientBalanceErr(stellarDistAccountDBVault).Error(),
@@ -1438,7 +998,7 @@ func Test_DisbursementManagementService_validateBalanceForDisbursement(t *testin
 			prepareMocksFn: func(mDistAccService *mocks.MockDistributionAccountService) {
 				mDistAccService.
 					On("GetBalance", ctx, &circleDistAccountDBVault, *asset).
-					Return(99.99, nil).
+					Return(decimal.NewFromFloat(99.99), nil).
 					Once()
 			},
 			expectedErrContains: expectedInsufficientBalanceErr(circleDistAccountDBVault).Error(),
@@ -1449,7 +1009,7 @@ func Test_DisbursementManagementService_validateBalanceForDisbursement(t *testin
 			prepareMocksFn: func(mDistAccService *mocks.MockDistributionAccountService) {
 				mDistAccService.
 					On("GetBalance", ctx, &stellarDistAccountEnv, *asset).
-					Return(100.00, nil).
+					Return(decimal.NewFromFloat(100.00), nil).
 					Once()
 			},
 		},
@@ -1459,7 +1019,7 @@ func Test_DisbursementManagementService_validateBalanceForDisbursement(t *testin
 			prepareMocksFn: func(mDistAccService *mocks.MockDistributionAccountService) {
 				mDistAccService.
 					On("GetBalance", ctx, &stellarDistAccountDBVault, *asset).
-					Return(100.00, nil).
+					Return(decimal.NewFromFloat(100.00), nil).
 					Once()
 			},
 		},
@@ -1469,7 +1029,7 @@ func Test_DisbursementManagementService_validateBalanceForDisbursement(t *testin
 			prepareMocksFn: func(mDistAccService *mocks.MockDistributionAccountService) {
 				mDistAccService.
 					On("GetBalance", ctx, &circleDistAccountDBVault, *asset).
-					Return(100.00, nil).
+					Return(decimal.NewFromFloat(100.00), nil).
 					Once()
 			},
 		},
@@ -1584,7 +1144,7 @@ func Test_DisbursementManagementService_validateBalanceForDisbursement_AmountDis
 			mDistAccService := mocks.NewMockDistributionAccountService(t)
 			mDistAccService.
 				On("GetBalance", ctx, &stellarDistAccount, *asset).
-				Return(tc.availableBalance, nil).
+				Return(decimal.NewFromFloat(tc.availableBalance), nil).
 				Once()
 
 			svc := &DisbursementManagementService{

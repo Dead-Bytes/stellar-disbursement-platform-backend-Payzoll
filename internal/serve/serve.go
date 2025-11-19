@@ -16,14 +16,13 @@ import (
 	"github.com/stellar/go/support/log"
 
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/anchorplatform"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/bridge"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/circle"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/crashtracker"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/events"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/message"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/monitor"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sepauth"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httpclient"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httperror"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httphandler"
@@ -52,49 +51,49 @@ func (h *HTTPServer) Run(conf supporthttp.Config) {
 }
 
 type ServeOptions struct {
-	Environment                     string
-	GitCommit                       string
-	Port                            int
-	Version                         string
-	InstanceName                    string
-	MonitorService                  monitor.MonitorServiceInterface
-	MtnDBConnectionPool             db.DBConnectionPool
-	AdminDBConnectionPool           db.DBConnectionPool
-	EC256PrivateKey                 string
-	Models                          *data.Models
-	CorsAllowedOrigins              []string
-	authManager                     auth.AuthManager
-	EmailMessengerClient            message.MessengerClient
-	MessageDispatcher               message.MessageDispatcherInterface
-	SEP24JWTSecret                  string
-	sep24JWTManager                 *anchorplatform.JWTManager
-	BaseURL                         string
-	ResetTokenExpirationHours       int
-	NetworkPassphrase               string
-	NetworkType                     utils.NetworkType
-	SubmitterEngine                 engine.SubmitterEngine
-	Sep10SigningPublicKey           string
-	Sep10SigningPrivateKey          string
-	AnchorPlatformBaseSepURL        string
-	AnchorPlatformBasePlatformURL   string
-	AnchorPlatformOutgoingJWTSecret string
-	AnchorPlatformAPIService        anchorplatform.AnchorPlatformAPIServiceInterface
-	CrashTrackerClient              crashtracker.CrashTrackerClient
-	ReCAPTCHASiteKey                string
-	ReCAPTCHASiteSecretKey          string
-	DisableMFA                      bool
-	DisableReCAPTCHA                bool
-	PasswordValidator               *authUtils.PasswordValidator
-	EnableScheduler                 bool // Deprecated: Use EventBrokerType=SCHEDULER instead.
-	tenantManager                   tenant.ManagerInterface
-	DistributionAccountService      services.DistributionAccountServiceInterface
-	DistAccEncryptionPassphrase     string
-	EventProducer                   events.Producer
-	MaxInvitationResendAttempts     int
-	SingleTenantMode                bool
-	CircleService                   circle.ServiceInterface
-	CircleAPIType                   circle.APIType
-	BridgeService                   bridge.ServiceInterface
+	Environment                    string
+	GitCommit                      string
+	Port                           int
+	Version                        string
+	InstanceName                   string
+	MonitorService                 monitor.MonitorServiceInterface
+	MtnDBConnectionPool            db.DBConnectionPool
+	AdminDBConnectionPool          db.DBConnectionPool
+	EC256PrivateKey                string
+	Models                         *data.Models
+	CorsAllowedOrigins             []string
+	authManager                    auth.AuthManager
+	EmailMessengerClient           message.MessengerClient
+	MessageDispatcher              message.MessageDispatcherInterface
+	SEP24JWTSecret                 string
+	sep24JWTManager                *sepauth.JWTManager
+	BaseURL                        string
+	ResetTokenExpirationHours      int
+	NetworkPassphrase              string
+	NetworkType                    utils.NetworkType
+	SubmitterEngine                engine.SubmitterEngine
+	Sep10SigningPublicKey          string
+	Sep10SigningPrivateKey         string
+	Sep10ClientAttributionRequired bool
+	Sep10Service                   services.SEP10Service
+	CrashTrackerClient             crashtracker.CrashTrackerClient
+	ReCAPTCHASiteKey               string
+	ReCAPTCHASiteSecretKey         string
+	CAPTCHAType                    validators.CAPTCHAType
+	ReCAPTCHAV3MinScore            float64
+	DisableMFA                     bool
+	DisableReCAPTCHA               bool
+	PasswordValidator              *authUtils.PasswordValidator
+
+	tenantManager               tenant.ManagerInterface
+	DistributionAccountService  services.DistributionAccountServiceInterface
+	DistAccEncryptionPassphrase string
+
+	MaxInvitationResendAttempts int
+	SingleTenantMode            bool
+	CircleService               circle.ServiceInterface
+	CircleAPIType               circle.APIType
+	BridgeService               bridge.ServiceInterface
 }
 
 // SetupDependencies uses the serve options to setup the dependencies for the server.
@@ -127,8 +126,8 @@ func (opts *ServeOptions) SetupDependencies() error {
 		return fmt.Errorf("error creating Stellar Auth manager: %w", err)
 	}
 
-	// Setup Anchor Platform SEP24 JWT manager
-	sep24JWTManager, err := anchorplatform.NewJWTManager(opts.SEP24JWTSecret, 15000)
+	// Setup SEP24 JWT manager
+	sep24JWTManager, err := sepauth.NewJWTManager(opts.SEP24JWTSecret, 300000)
 	if err != nil {
 		return fmt.Errorf("error creating SEP-24 JWT manager: %w", err)
 	}
@@ -138,6 +137,24 @@ func (opts *ServeOptions) SetupDependencies() error {
 	if err != nil {
 		return fmt.Errorf("error initializing password validator: %w", err)
 	}
+
+	// Determine allow retry based on network passphrase
+	allowHTTPRetry := opts.NetworkPassphrase != network.PublicNetworkPassphrase
+
+	sep10Service, err := services.NewSEP10Service(
+		sep24JWTManager,
+		opts.NetworkPassphrase,
+		opts.Sep10SigningPrivateKey,
+		opts.BaseURL,
+		allowHTTPRetry,
+		opts.SubmitterEngine.HorizonClient,
+		opts.Sep10ClientAttributionRequired,
+	)
+	if err != nil {
+		return fmt.Errorf("initializing SEP 10 Service: %w", err)
+	}
+
+	opts.Sep10Service = sep10Service
 
 	return nil
 }
@@ -233,6 +250,7 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 		r.Use(middleware.APIKeyOrJWTAuthenticate(o.Models.APIKeys, middleware.AuthenticateMiddleware(authManager, o.tenantManager)))
 		r.Use(middleware.EnsureTenantMiddleware)
 
+		// API Key management endpoints
 		r.With(middleware.RequirePermission(
 			data.WriteAll,
 			middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole, data.DeveloperUserRole),
@@ -240,13 +258,14 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 			apiKeyHandler := httphandler.APIKeyHandler{
 				Models: o.Models,
 			}
-			r.Get("/{id}", apiKeyHandler.GetApiKeyByID)
-			r.Get("/", apiKeyHandler.GetAllApiKeys)
+			r.Get("/{id}", apiKeyHandler.GetAPIKeyByID)
+			r.Get("/", apiKeyHandler.GetAllAPIKeys)
 			r.Post("/", apiKeyHandler.CreateAPIKey)
 			r.Patch("/{id}", apiKeyHandler.UpdateKey)
-			r.Delete("/{id}", apiKeyHandler.DeleteApiKey)
+			r.Delete("/{id}", apiKeyHandler.DeleteAPIKey)
 		})
 
+		// Statistics endpoints
 		r.With(middleware.RequirePermission(
 			data.ReadStatistics,
 			middleware.AnyRoleMiddleware(authManager, data.GetAllRoles()...),
@@ -256,6 +275,7 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 			r.Get("/{id}", h.GetStatisticsByDisbursement)
 		})
 
+		// User management endpoints
 		r.Route("/users", func(r chi.Router) {
 			userHandler := httphandler.UserHandler{
 				AuthManager:        authManager,
@@ -281,12 +301,12 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 				r.Patch("/activation", userHandler.UserActivation)
 			})
 		})
-
 		r.With(middleware.RequirePermission(
 			data.ReadAll,
 			middleware.AnyRoleMiddleware(authManager),
 		)).Post("/refresh-token", httphandler.RefreshTokenHandler{AuthManager: authManager}.PostRefreshToken)
 
+		// Disbursement endpoints
 		r.Route("/disbursements", func(r chi.Router) {
 			handler := httphandler.DisbursementHandler{
 				Models:                      o.Models,
@@ -296,7 +316,6 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 				DisbursementManagementService: &services.DisbursementManagementService{
 					Models:                     o.Models,
 					AuthManager:                authManager,
-					EventProducer:              o.EventProducer,
 					CrashTrackerClient:         o.CrashTrackerClient,
 					DistributionAccountService: o.DistributionAccountService,
 				},
@@ -305,7 +324,7 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 			// Group all READ operations
 			r.With(middleware.RequirePermission(
 				data.ReadDisbursements,
-				middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole, data.FinancialControllerUserRole, data.BusinessUserRole),
+				middleware.AnyRoleMiddleware(authManager, data.GetBusinessOperationRoles()...),
 			)).Group(func(r chi.Router) {
 				r.Get("/", handler.GetDisbursements)
 				r.Get("/{id}", handler.GetDisbursement)
@@ -313,29 +332,35 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 				r.Get("/{id}/instructions", handler.GetDisbursementInstructions)
 			})
 
-			// Group all WRITE operations
+			// Group CREATE/EDIT operations (accessible to initiators)
 			r.With(middleware.RequirePermission(
 				data.WriteDisbursements,
-				middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole, data.FinancialControllerUserRole),
+				middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole, data.FinancialControllerUserRole, data.InitiatorUserRole),
 			)).Group(func(r chi.Router) {
 				r.Post("/", handler.PostDisbursement)
 				r.Delete("/{id}", handler.DeleteDisbursement)
 				r.Post("/{id}/instructions", handler.PostDisbursementInstructions)
+			})
+
+			// Group STATUS operations (accessible to approvers)
+			r.With(middleware.RequirePermission(
+				data.WriteDisbursements,
+				middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole, data.FinancialControllerUserRole, data.ApproverUserRole),
+			)).Group(func(r chi.Router) {
 				r.Patch("/{id}/status", handler.PatchDisbursementStatus)
 			})
 		})
 
+		// Payment endpoints
 		r.Route("/payments", func(r chi.Router) {
 			paymentsHandler := httphandler.PaymentsHandler{
 				Models:                      o.Models,
 				DBConnectionPool:            o.MtnDBConnectionPool,
 				AuthManager:                 o.authManager,
-				EventProducer:               o.EventProducer,
 				CrashTrackerClient:          o.CrashTrackerClient,
 				DistributionAccountResolver: o.SubmitterEngine.DistributionAccountResolver,
 				DirectPaymentService: services.NewDirectPaymentService(
 					o.Models,
-					o.EventProducer,
 					o.DistributionAccountService,
 					o.SubmitterEngine,
 				),
@@ -344,7 +369,7 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 			// Read operations
 			r.With(middleware.RequirePermission(
 				data.ReadPayments,
-				middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole, data.FinancialControllerUserRole, data.BusinessUserRole),
+				middleware.AnyRoleMiddleware(authManager, data.GetBusinessOperationRoles()...),
 			)).Group(func(r chi.Router) {
 				r.Get("/", paymentsHandler.GetPayments)
 				r.Get("/{id}", paymentsHandler.GetPayment)
@@ -365,6 +390,7 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 			)).Patch("/{id}/status", paymentsHandler.PatchPaymentStatus)
 		})
 
+		// Receiver endpoints
 		r.Route("/receivers", func(r chi.Router) {
 			receiversHandler := httphandler.ReceiverHandler{Models: o.Models, DBConnectionPool: o.MtnDBConnectionPool}
 
@@ -376,7 +402,7 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 
 			r.With(middleware.RequirePermission(
 				data.ReadReceivers,
-				middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole, data.FinancialControllerUserRole, data.BusinessUserRole),
+				middleware.AnyRoleMiddleware(authManager, data.GetBusinessOperationRoles()...),
 			)).Group(func(r chi.Router) {
 				r.Get("/", receiversHandler.GetReceivers)
 				r.Get("/{id}", receiversHandler.GetReceiver)
@@ -391,15 +417,15 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 			receiverWalletHandler := httphandler.ReceiverWalletsHandler{
 				Models:             o.Models,
 				CrashTrackerClient: o.CrashTrackerClient,
-				EventProducer:      o.EventProducer,
 			}
 
 			r.With(middleware.RequirePermission(
 				data.WriteReceivers,
-				middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole, data.FinancialControllerUserRole),
+				middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole, data.FinancialControllerUserRole, data.ApproverUserRole, data.InitiatorUserRole),
 			)).Group(func(r chi.Router) {
 				r.Post("/", receiversHandler.CreateReceiver)
 				r.Patch("/{id}", updateReceiverHandler.UpdateReceiver)
+				r.Patch("/{receiver_id}/wallets/{receiver_wallet_id}", receiverWalletHandler.PatchReceiverWallet)
 				r.Patch("/wallets/{receiver_wallet_id}", receiverWalletHandler.RetryInvitation)
 				r.Patch("/wallets/{receiver_wallet_id}/status", receiverWalletHandler.PatchReceiverWalletStatus)
 			})
@@ -449,7 +475,7 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 			// Write operations
 			r.With(middleware.RequirePermission(
 				data.WriteWallets,
-				middleware.AnyRoleMiddleware(authManager, data.DeveloperUserRole),
+				middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole, data.DeveloperUserRole),
 			)).Group(func(r chi.Router) {
 				r.Post("/", walletsHandler.PostWallets)
 				r.Delete("/{id}", walletsHandler.DeleteWallet)
@@ -457,7 +483,7 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 
 			r.With(middleware.RequirePermission(
 				data.WriteWallets,
-				middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole),
+				middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole, data.DeveloperUserRole),
 			)).Patch("/{id}", walletsHandler.PatchWallets)
 		})
 
@@ -550,7 +576,7 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 		}
 		r.With(middleware.RequirePermission(
 			data.ReadExports,
-			middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole, data.FinancialControllerUserRole),
+			middleware.AnyRoleMiddleware(authManager, data.OwnerUserRole, data.FinancialControllerUserRole, data.ApproverUserRole, data.InitiatorUserRole),
 		)).Route("/exports", func(r chi.Router) {
 			r.Get("/disbursements", exportHandler.ExportDisbursements)
 			r.Get("/payments", exportHandler.ExportPayments)
@@ -558,7 +584,12 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 		})
 	})
 
-	reCAPTCHAValidator := validators.NewGoogleReCAPTCHAValidator(o.ReCAPTCHASiteSecretKey, httpclient.DefaultClient())
+	captchaFactory := validators.NewCAPTCHAValidatorFactory()
+	reCAPTCHAValidator, err := captchaFactory.CreateValidator(o.CAPTCHAType, o.ReCAPTCHASiteSecretKey, o.ReCAPTCHAV3MinScore)
+	if err != nil {
+		log.Errorf("Error creating CAPTCHA validator: %v. Falling back to reCAPTCHA v2.", err)
+		reCAPTCHAValidator = validators.NewGoogleReCAPTCHAValidator(o.ReCAPTCHASiteSecretKey, httpclient.DefaultClient())
+	}
 
 	// Public routes that are tenant aware (they need to know the tenant ID)
 	mux.Group(func(r chi.Router) {
@@ -598,33 +629,56 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 		r.Get("/r/{code}", httphandler.URLShortenerHandler{Models: o.Models}.HandleRedirect)
 	})
 
-	// SEP-24 and miscellaneous endpoints that are tenant-unaware
+	// SEP-1, SEP-10, SEP-24 and miscellaneous endpoints that are tenant-unaware
 	mux.Group(func(r chi.Router) {
 		r.Get("/health", httphandler.HealthHandler{
 			ReleaseID:        o.GitCommit,
 			ServiceID:        ServiceID,
 			Version:          o.Version,
 			DBConnectionPool: o.AdminDBConnectionPool,
-			Producer:         o.EventProducer,
 		}.ServeHTTP)
 
-		// START SEP-24 endpoints
+		// SEP 1 TOML file endpoint
 		r.Get("/.well-known/stellar.toml", httphandler.StellarTomlHandler{
-			AnchorPlatformBaseSepURL:    o.AnchorPlatformBaseSepURL,
 			DistributionAccountResolver: o.SubmitterEngine.DistributionAccountResolver,
 			NetworkPassphrase:           o.NetworkPassphrase,
 			Models:                      o.Models,
 			Sep10SigningPublicKey:       o.Sep10SigningPublicKey,
 			InstanceName:                o.InstanceName,
+			BaseURL:                     o.BaseURL,
 		}.ServeHTTP)
 
-		sep24QueryTokenAuthenticationMiddleware := anchorplatform.SEP24QueryTokenAuthenticateMiddleware(o.sep24JWTManager, o.NetworkPassphrase, o.tenantManager, o.SingleTenantMode)
+		// SEP-10 endpoints
+		r.Route("/sep10", func(r chi.Router) {
+			sep10Handler := httphandler.SEP10Handler{
+				SEP10Service: o.Sep10Service,
+			}
+
+			r.Get("/auth", sep10Handler.GetChallenge)
+			r.Post("/auth", sep10Handler.PostChallenge)
+		})
+		// SEP-24 endpoints
+		r.Route("/sep24", func(r chi.Router) {
+			sep24Handler := httphandler.SEP24Handler{
+				Models:             o.Models,
+				SEP24JWTManager:    o.sep24JWTManager,
+				InteractiveBaseURL: o.BaseURL,
+			}
+			r.Get("/info", sep24Handler.GetInfo)
+			// Protect transaction lookup with SEP-10 auth to ensure only authorized clients can access details
+			r.With(sepauth.SEP10HeaderTokenAuthenticateMiddleware(o.sep24JWTManager)).Get("/transaction", sep24Handler.GetTransaction)
+
+			// For initiating interactive deposit, allow either the new middleware (preferred) or legacy header path inside handler
+			r.With(sepauth.SEP10HeaderTokenAuthenticateMiddleware(o.sep24JWTManager)).Post("/transactions/deposit/interactive", sep24Handler.PostDepositInteractive)
+		})
+
+		sep24QueryTokenAuthenticationMiddleware := sepauth.SEP24QueryTokenAuthenticateMiddleware(o.sep24JWTManager, o.NetworkPassphrase, o.tenantManager, o.SingleTenantMode)
 		r.With(sep24QueryTokenAuthenticationMiddleware).Get("/wallet-registration/*", httphandler.SEP24InteractiveDepositHandler{
 			App:      sep24frontend.App,
 			BasePath: "app/dist",
 		}.ServeApp)
 
-		sep24HeaderTokenAuthenticationMiddleware := anchorplatform.SEP24HeaderTokenAuthenticateMiddleware(o.sep24JWTManager, o.NetworkPassphrase, o.tenantManager, o.SingleTenantMode)
+		sep24HeaderTokenAuthenticationMiddleware := sepauth.SEP24HeaderTokenAuthenticateMiddleware(o.sep24JWTManager, o.NetworkPassphrase, o.tenantManager, o.SingleTenantMode)
 		r.With(sep24HeaderTokenAuthenticationMiddleware).Route("/sep24-interactive-deposit", func(r chi.Router) {
 			r.Get("/info", httphandler.ReceiverRegistrationHandler{
 				Models:              o.Models,
@@ -640,12 +694,10 @@ func handleHTTP(o ServeOptions) *chi.Mux {
 				ReCAPTCHADisabled:  o.DisableReCAPTCHA,
 			}.ServeHTTP)
 			r.Post("/verification", httphandler.VerifyReceiverRegistrationHandler{
-				AnchorPlatformAPIService:    o.AnchorPlatformAPIService,
 				Models:                      o.Models,
 				ReCAPTCHAValidator:          reCAPTCHAValidator,
 				ReCAPTCHADisabled:           o.DisableReCAPTCHA,
 				NetworkPassphrase:           o.NetworkPassphrase,
-				EventProducer:               o.EventProducer,
 				CrashTrackerClient:          o.CrashTrackerClient,
 				DistributionAccountResolver: o.SubmitterEngine.DistributionAccountResolver,
 			}.VerifyReceiverRegistration)

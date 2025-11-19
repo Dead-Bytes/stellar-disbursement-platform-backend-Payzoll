@@ -301,10 +301,10 @@ func CreateReceiverFixture(t *testing.T, ctx context.Context, sqlExec db.SQLExec
 func InsertReceiverFixture(t *testing.T, ctx context.Context, sqlExec db.SQLExecuter, r *ReceiverInsert) *Receiver {
 	t.Helper()
 
-	if r.ExternalId == nil {
+	if r.ExternalID == nil {
 		randString, err := utils.RandomString(56)
 		require.NoError(t, err)
-		r.ExternalId = &randString
+		r.ExternalID = &randString
 	}
 
 	query := `
@@ -316,7 +316,7 @@ func InsertReceiverFixture(t *testing.T, ctx context.Context, sqlExec db.SQLExec
 			` + ReceiverColumnNames("", "")
 
 	var receiver Receiver
-	err := sqlExec.GetContext(ctx, &receiver, query, r.Email, r.PhoneNumber, r.ExternalId)
+	err := sqlExec.GetContext(ctx, &receiver, query, r.Email, r.PhoneNumber, r.ExternalID)
 	require.NoError(t, err)
 
 	return &receiver
@@ -411,7 +411,7 @@ func CreateReceiverWalletFixture(t *testing.T, ctx context.Context, sqlExec db.S
 		WITH inserted_receiver_wallet AS (
 			INSERT INTO receiver_wallets
 				(receiver_id, wallet_id, stellar_address, stellar_memo, stellar_memo_type, status, status_history,
-otp, otp_confirmed_with, otp_confirmed_at, otp_created_at,anchor_platform_transaction_id, invitation_sent_at)
+otp, otp_confirmed_with, otp_confirmed_at, otp_created_at,sep24_transaction_id, invitation_sent_at)
 			VALUES
 				($1, $2, $3, $4, $5, $6, ARRAY[create_receiver_wallet_status_history(now(), $6, '')], 
 $7, $8, $9, $10 ,$11, $12)
@@ -514,8 +514,8 @@ func CreatePaymentFixture(t *testing.T, ctx context.Context, sqlExec db.SQLExecu
 		RETURNING
 			id
 	`
-	var newId string
-	err := sqlExec.GetContext(ctx, &newId, query,
+	var newID string
+	err := sqlExec.GetContext(ctx, &newID, query,
 		p.ReceiverWallet.Receiver.ID,
 		disbursementID,
 		p.ReceiverWallet.ID,
@@ -533,7 +533,7 @@ func CreatePaymentFixture(t *testing.T, ctx context.Context, sqlExec db.SQLExecu
 	require.NoError(t, err)
 
 	// get payment
-	payment, err := model.Get(ctx, newId, sqlExec)
+	payment, err := model.Get(ctx, newID, sqlExec)
 	require.NoError(t, err)
 	return payment
 }

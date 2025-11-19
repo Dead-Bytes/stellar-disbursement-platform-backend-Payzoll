@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+	"github.com/shopspring/decimal"
 	"github.com/stellar/go/strkey"
 	"github.com/stellar/go/txnbuild"
 	"github.com/stellar/go/xdr"
@@ -33,7 +34,7 @@ type Transaction struct {
 	StatusHistory TransactionStatusHistory `db:"status_history"`
 	AssetCode     string                   `db:"asset_code"`
 	AssetIssuer   string                   `db:"asset_issuer"`
-	Amount        float64                  `db:"amount"`
+	Amount        decimal.Decimal          `db:"amount"`
 	Destination   string                   `db:"destination"`
 	Memo          string                   `db:"memo"`
 	MemoType      schema.MemoType          `db:"memo_type"`
@@ -66,6 +67,7 @@ type Transaction struct {
 }
 
 func (tx *Transaction) BuildMemo() (txnbuild.Memo, error) {
+	//nolint:wrapcheck // This is a wrapper method
 	return schema.NewMemo(tx.MemoType, tx.Memo)
 }
 
@@ -90,11 +92,11 @@ func (tx *Transaction) validate() error {
 			return fmt.Errorf("asset issuer %q is not a valid ed25519 public key", tx.AssetIssuer)
 		}
 	}
-	if tx.Amount <= 0 {
+	if tx.Amount.LessThanOrEqual(decimal.Zero) {
 		return fmt.Errorf("amount must be positive")
 	}
-	if !strkey.IsValidEd25519PublicKey(tx.Destination) {
-		return fmt.Errorf("destination %q is not a valid ed25519 public key", tx.Destination)
+	if !strkey.IsValidEd25519PublicKey(tx.Destination) && !strkey.IsValidContractAddress(tx.Destination) {
+		return fmt.Errorf("destination %q is not a valid ed25519 public key or contract address", tx.Destination)
 	}
 	if tx.TenantID == "" {
 		return fmt.Errorf("tenant ID is required")
@@ -204,8 +206,8 @@ func (t *TransactionModel) Get(ctx context.Context, txID string) (*Transaction, 
 	q := `
 		SELECT
 			` + TransactionColumnNames("", "") + `
-		FROM 
-			submitter_transactions t 
+		FROM
+			submitter_transactions t
 		WHERE
 			t.id = $1
 		`
@@ -216,7 +218,7 @@ func (t *TransactionModel) Get(ctx context.Context, txID string) (*Transaction, 
 		}
 		return nil, fmt.Errorf("error querying transaction ID %s: %w", txID, err)
 	}
-	return &transaction, err
+	return &transaction, nil
 }
 
 func (t *TransactionModel) GetAllByPaymentIDs(ctx context.Context, paymentIDs []string) ([]*Transaction, error) {
@@ -456,7 +458,7 @@ func (t *TransactionModel) UpdateSyncedTransactions(ctx context.Context, dbTx db
 
 // queryFilterForLockedState returns a SQL query filter that can be used to filter transactions based on their locked
 // state.
-func (ca *TransactionModel) queryFilterForLockedState(locked bool, ledgerNumber int32) string {
+func (t *TransactionModel) queryFilterForLockedState(locked bool, ledgerNumber int32) string {
 	if locked {
 		return fmt.Sprintf("(locked_until_ledger_number >= %d)", ledgerNumber)
 	}
@@ -465,7 +467,7 @@ func (ca *TransactionModel) queryFilterForLockedState(locked bool, ledgerNumber 
 
 // Lock locks the transaction with the provided transactionID. It returns a ErrRecordNotFound error if you try to lock a
 // transaction that is already locked.
-func (ca *TransactionModel) Lock(ctx context.Context, sqlExec db.SQLExecuter, transactionID string, currentLedger, nextLedgerLock int32) (*Transaction, error) {
+func (t *TransactionModel) Lock(ctx context.Context, sqlExec db.SQLExecuter, transactionID string, currentLedger, nextLedgerLock int32) (*Transaction, error) {
 	q := fmt.Sprintf(`
 		UPDATE
 			submitter_transactions
@@ -480,7 +482,7 @@ func (ca *TransactionModel) Lock(ctx context.Context, sqlExec db.SQLExecuter, tr
 			AND status = ANY($4)
 		RETURNING
 			`+TransactionColumnNames("", ""),
-		ca.queryFilterForLockedState(false, currentLedger),
+		t.queryFilterForLockedState(false, currentLedger),
 	)
 	var transaction Transaction
 	allowedTxStatuses := []TransactionStatus{TransactionStatusPending, TransactionStatusProcessing}
@@ -496,7 +498,7 @@ func (ca *TransactionModel) Lock(ctx context.Context, sqlExec db.SQLExecuter, tr
 }
 
 // Unlock lifts the lock from the transactionID with the provided publicKey.
-func (ca *TransactionModel) Unlock(ctx context.Context, sqlExec db.SQLExecuter, publicKey string) (*Transaction, error) {
+func (t *TransactionModel) Unlock(ctx context.Context, sqlExec db.SQLExecuter, publicKey string) (*Transaction, error) {
 	q := `
 		UPDATE
 			submitter_transactions
@@ -520,7 +522,7 @@ func (ca *TransactionModel) Unlock(ctx context.Context, sqlExec db.SQLExecuter, 
 }
 
 // PrepareTransactionForReprocessing pushes the transaction with the provided transactionID back to the queue.
-func (ca *TransactionModel) PrepareTransactionForReprocessing(ctx context.Context, sqlExec db.SQLExecuter, transactionID string) (*Transaction, error) {
+func (t *TransactionModel) PrepareTransactionForReprocessing(ctx context.Context, sqlExec db.SQLExecuter, transactionID string) (*Transaction, error) {
 	q := `
 		UPDATE
 			submitter_transactions

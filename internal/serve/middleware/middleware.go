@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -17,18 +16,16 @@ import (
 
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/monitor"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httperror"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/utils"
+	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
 	"github.com/stellar/stellar-disbursement-platform-backend/stellar-auth/pkg/auth"
 	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
 )
 
-type ContextKey string
-
 const (
-	TokenContextKey  ContextKey = "auth_token"
-	UserIDContextKey ContextKey = "user_id"
-	TenantHeaderKey  string     = "SDP-Tenant-Name"
+	TenantHeaderKey string = "SDP-Tenant-Name"
 )
 
 // RecoverHandler is a middleware that recovers from panics and logs the error.
@@ -69,14 +66,16 @@ func MetricsRequestHandler(monitorService monitor.MonitorServiceInterface) func(
 
 			duration := time.Since(then)
 
-			labels := monitor.HttpRequestLabels{
+			labels := monitor.HTTPRequestLabels{
 				Status: fmt.Sprintf("%d", mw.Status()),
 				Route:  utils.GetRoutePattern(req),
 				Method: req.Method,
+				CommonLabels: monitor.CommonLabels{
+					TenantName: sdpcontext.MustGetTenantNameFromContext(req.Context()),
+				},
 			}
 
-			err := monitorService.MonitorHttpRequestDuration(duration, labels)
-			if err != nil {
+			if err := monitorService.MonitorHTTPRequestDuration(duration, labels); err != nil {
 				log.Ctx(req.Context()).Errorf("Error trying to monitor request time: %s", err)
 			}
 		})
@@ -113,15 +112,15 @@ func AuthenticateMiddleware(authManager auth.AuthManager, tenantManager tenant.M
 			}
 
 			// Add the token to the request context
-			ctx = context.WithValue(ctx, TokenContextKey, token)
-			ctx = context.WithValue(ctx, UserIDContextKey, userID)
+			ctx = sdpcontext.SetTokenInContext(ctx, token)
+			ctx = sdpcontext.SetUserIDInContext(ctx, userID)
 
 			// Attempt fetching tenant ID from token
 			tenantID, err := authManager.GetTenantID(ctx, token)
 			if err == nil && tenantID != "" {
 				currentTenant, tenantErr := tenantManager.GetTenantByID(ctx, tenantID)
 				if tenantErr == nil && currentTenant != nil {
-					ctx = tenant.SaveTenantInContext(ctx, currentTenant)
+					ctx = sdpcontext.SetTenantInContext(ctx, currentTenant)
 				}
 			}
 
@@ -142,8 +141,8 @@ func AnyRoleMiddleware(authManager auth.AuthManager, requiredRoles ...data.UserR
 		return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 			ctx := req.Context()
 
-			token, ok := ctx.Value(TokenContextKey).(string)
-			if !ok {
+			token, err := sdpcontext.GetTokenFromContext(ctx)
+			if err != nil {
 				httperror.Unauthorized("", nil, nil).Render(rw)
 				return
 			}
@@ -208,7 +207,7 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 		}
 		logCtx := log.Set(reqCtx, log.Ctx(reqCtx).WithFields(logFields))
 
-		ctxTenant, err := tenant.GetTenantFromContext(reqCtx)
+		ctxTenant, err := sdpcontext.GetTenantFromContext(reqCtx)
 		if err != nil {
 			// Log for auditing purposes when we cannot derive the tenant from the context in the case of
 			// tenant-unaware endpoints
@@ -296,7 +295,7 @@ func ResolveTenantFromRequestMiddleware(tenantManager tenant.ManagerInterface, s
 		return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 			ctx := req.Context()
 
-			var currentTenant *tenant.Tenant
+			var currentTenant *schema.Tenant
 			if singleTenantMode {
 				var err error
 				currentTenant, err = tenantManager.GetDefault(ctx)
@@ -320,13 +319,23 @@ func ResolveTenantFromRequestMiddleware(tenantManager tenant.ManagerInterface, s
 				}
 			} else {
 				// Attempt fetching tenant name from request
-				if tenantName, err := extractTenantNameFromRequest(req); err == nil && tenantName != "" {
-					currentTenant, _ = tenantManager.GetTenantByName(ctx, tenantName)
+				tenantName, err := extractTenantNameFromRequest(req)
+				if err != nil {
+					if errors.Is(err, utils.ErrHostnameIsIPAddress) {
+						log.Ctx(ctx).Debug("hostname is an IP address, skipping tenant resolution")
+					} else if !errors.Is(err, utils.ErrTenantNameNotFound) {
+						log.Ctx(ctx).Debugf("could not extract tenant name from request: %v", err)
+					}
+				} else if tenantName != "" {
+					currentTenant, err = tenantManager.GetTenantByName(ctx, tenantName)
+					if err != nil {
+						log.Ctx(ctx).Warnf("could not find tenant with name %s: %v", tenantName, err)
+					}
 				}
 			}
 
 			if currentTenant != nil {
-				ctx = tenant.SaveTenantInContext(ctx, currentTenant)
+				ctx = sdpcontext.SetTenantInContext(ctx, currentTenant)
 				next.ServeHTTP(rw, req.WithContext(ctx))
 			} else {
 				next.ServeHTTP(rw, req)
@@ -340,7 +349,7 @@ func EnsureTenantMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
 
-		if _, err := tenant.GetTenantFromContext(ctx); err != nil {
+		if _, err := sdpcontext.GetTenantFromContext(ctx); err != nil {
 			httperror.BadRequest("Tenant not found in context", err, nil).Render(rw)
 			return
 		}
@@ -349,12 +358,12 @@ func EnsureTenantMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func BasicAuthMiddleware(adminAccount, adminApiKey string) func(http.Handler) http.Handler {
+func BasicAuthMiddleware(adminAccount, adminAPIKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 			ctx := req.Context()
 
-			if adminAccount == "" || adminApiKey == "" {
+			if adminAccount == "" || adminAPIKey == "" {
 				httperror.InternalError(ctx, "Admin account and API key are not set", nil, nil).Render(rw)
 				return
 			}
@@ -366,7 +375,7 @@ func BasicAuthMiddleware(adminAccount, adminApiKey string) func(http.Handler) ht
 			}
 
 			// Using constant time comparison to avoid timing attacks
-			if accountUserName != adminAccount || subtle.ConstantTimeCompare([]byte(apiKey), []byte(adminApiKey)) != 1 {
+			if accountUserName != adminAccount || subtle.ConstantTimeCompare([]byte(apiKey), []byte(adminAPIKey)) != 1 {
 				httperror.Unauthorized("", nil, nil).Render(rw)
 				return
 			}
@@ -386,5 +395,9 @@ func extractTenantNameFromRequest(r *http.Request) (string, error) {
 	}
 
 	// 2. If header is blank, extract from the hostname prefix
-	return utils.ExtractTenantNameFromHostName(r.Host)
+	tenantName, err := utils.ExtractTenantNameFromHostName(r.Host)
+	if err != nil {
+		return "", fmt.Errorf("extracting tenant name from hostname: %w", err)
+	}
+	return tenantName, nil
 }

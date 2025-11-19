@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -24,12 +25,12 @@ func Test_Fixtures_CreateTransactionFixture(t *testing.T) {
 	tx := Transaction{
 		AssetCode:   "USDC",
 		AssetIssuer: "GCBIRB7Q5T53H4L6P5QSI3O6LPD5MBWGM5GHE7A5NY4XT5OT4VCOEZFX",
-		Amount:      1,
+		Amount:      decimal.NewFromInt(1),
 	}
 
 	t.Run("create transaction with pending status", func(t *testing.T) {
 		tx.ExternalID = uuid.NewString()
-		createdTx := CreateTransactionFixtureNew(t, ctx, dbConnectionPool, TransactionFixture{
+		createdTx := CreateTransactionFixture(t, ctx, dbConnectionPool, TransactionFixture{
 			ExternalID:         tx.ExternalID,
 			AssetCode:          tx.AssetCode,
 			AssetIssuer:        tx.AssetIssuer,
@@ -41,13 +42,13 @@ func Test_Fixtures_CreateTransactionFixture(t *testing.T) {
 		assert.Equal(t, tx.AssetCode, createdTx.AssetCode)
 		assert.Equal(t, tx.AssetIssuer, createdTx.AssetIssuer)
 		assert.Equal(t, tx.ExternalID, createdTx.ExternalID)
-		assert.Equal(t, tx.Amount, createdTx.Amount)
+		assert.True(t, tx.Amount.Equal(createdTx.Amount))
 		assert.Empty(t, createdTx.CompletedAt)
 	})
 
 	t.Run("create transaction with successful status", func(t *testing.T) {
 		tx.ExternalID = uuid.NewString()
-		createdTx := CreateTransactionFixtureNew(t, ctx, dbConnectionPool, TransactionFixture{
+		createdTx := CreateTransactionFixture(t, ctx, dbConnectionPool, TransactionFixture{
 			ExternalID:         tx.ExternalID,
 			AssetCode:          tx.AssetCode,
 			AssetIssuer:        tx.AssetIssuer,
@@ -58,7 +59,7 @@ func Test_Fixtures_CreateTransactionFixture(t *testing.T) {
 		assert.Equal(t, tx.AssetCode, createdTx.AssetCode)
 		assert.Equal(t, tx.AssetIssuer, createdTx.AssetIssuer)
 		assert.Equal(t, tx.ExternalID, createdTx.ExternalID)
-		assert.Equal(t, tx.Amount, createdTx.Amount)
+		assert.True(t, tx.Amount.Equal(createdTx.Amount))
 		assert.False(t, createdTx.CompletedAt.IsZero())
 	})
 }
@@ -76,12 +77,12 @@ func Test_Fixtures_CreateAndDeleteAllTransactionFixtures(t *testing.T) {
 		ExternalID:  "external-id-1",
 		AssetCode:   "USDC",
 		AssetIssuer: "GCBIRB7Q5T53H4L6P5QSI3O6LPD5MBWGM5GHE7A5NY4XT5OT4VCOEZFX",
-		Amount:      1,
+		Amount:      decimal.NewFromInt(1),
 	}
 
 	t.Run("create and delete transactions", func(t *testing.T) {
 		txCount := 5
-		createdTxs := CreateTransactionFixturesNew(t, ctx, dbConnectionPool, txCount, TransactionFixture{
+		createdTxs := CreateTransactionFixtures(t, ctx, dbConnectionPool, txCount, TransactionFixture{
 			AssetCode:          tx.AssetCode,
 			AssetIssuer:        tx.AssetIssuer,
 			DestinationAddress: tx.Destination,

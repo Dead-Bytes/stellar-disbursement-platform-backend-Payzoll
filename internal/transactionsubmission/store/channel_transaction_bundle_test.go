@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
@@ -164,12 +165,12 @@ func Test_ChannelTransactionBundleModel_LoadAndLockTuples(t *testing.T) {
 			unlockedChAccounts := CreateChannelAccountFixtures(t, ctx, dbConnectionPool, tc.numberOfChannelAccountsUnlocked)
 
 			// Transactions(LOCKED)
-			lockedTransactions := CreateTransactionFixturesNew(t, ctx, dbConnectionPool, tc.numberOfTransactionsLocked, TransactionFixture{
+			lockedTransactions := CreateTransactionFixtures(t, ctx, dbConnectionPool, tc.numberOfTransactionsLocked, TransactionFixture{
 				AssetCode:          "USDC",
 				AssetIssuer:        "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
 				DestinationAddress: "",
 				Status:             TransactionStatusPending,
-				Amount:             1,
+				Amount:             decimal.NewFromInt(1),
 				TenantID:           uuid.NewString(),
 			})
 			for _, tx := range lockedTransactions {
@@ -178,12 +179,12 @@ func Test_ChannelTransactionBundleModel_LoadAndLockTuples(t *testing.T) {
 			}
 
 			// Transactions(UNLOCKED)
-			unlockedTransactions := CreateTransactionFixturesNew(t, ctx, dbConnectionPool, tc.numberOfTransactionsUnlocked, TransactionFixture{
+			unlockedTransactions := CreateTransactionFixtures(t, ctx, dbConnectionPool, tc.numberOfTransactionsUnlocked, TransactionFixture{
 				AssetCode:          "USDC",
 				AssetIssuer:        "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
 				DestinationAddress: "",
 				Status:             TransactionStatusPending,
-				Amount:             1,
+				Amount:             decimal.NewFromInt(1),
 				TenantID:           uuid.NewString(),
 			})
 

@@ -11,8 +11,8 @@ import (
 	"github.com/stellar/go/support/render/httpjson"
 
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httperror"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/middleware"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/validators"
 )
 
@@ -65,8 +65,8 @@ func (h APIKeyHandler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, ok := ctx.Value(middleware.UserIDContextKey).(string)
-	if !ok {
+	userID, err := sdpcontext.GetUserIDFromContext(ctx)
+	if err != nil {
 		httperror.InternalError(ctx, "User identification error", nil, nil).Render(w)
 		return
 	}
@@ -87,12 +87,12 @@ func (h APIKeyHandler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	httpjson.RenderStatus(w, http.StatusCreated, apiKey, httpjson.JSON)
 }
 
-func (h APIKeyHandler) GetApiKeyByID(w http.ResponseWriter, r *http.Request) {
+func (h APIKeyHandler) GetAPIKeyByID(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	keyID := chi.URLParam(r, "id")
 
-	userID, ok := ctx.Value(middleware.UserIDContextKey).(string)
-	if !ok {
+	userID, err := sdpcontext.GetUserIDFromContext(ctx)
+	if err != nil {
 		httperror.InternalError(ctx, "User identification error", nil, nil).Render(w)
 		return
 	}
@@ -110,11 +110,11 @@ func (h APIKeyHandler) GetApiKeyByID(w http.ResponseWriter, r *http.Request) {
 	httpjson.RenderStatus(w, http.StatusOK, key, httpjson.JSON)
 }
 
-func (h APIKeyHandler) GetAllApiKeys(w http.ResponseWriter, r *http.Request) {
+func (h APIKeyHandler) GetAllAPIKeys(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	userID, ok := ctx.Value(middleware.UserIDContextKey).(string)
-	if !ok {
+	userID, err := sdpcontext.GetUserIDFromContext(ctx)
+	if err != nil {
 		httperror.InternalError(ctx, "User identification error", nil, nil).Render(w)
 		return
 	}
@@ -158,8 +158,8 @@ func (h APIKeyHandler) UpdateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, ok := ctx.Value(middleware.UserIDContextKey).(string)
-	if !ok {
+	userID, err := sdpcontext.GetUserIDFromContext(ctx)
+	if err != nil {
 		httperror.InternalError(ctx, "User identification error", nil, nil).Render(w)
 		return
 	}
@@ -177,12 +177,12 @@ func (h APIKeyHandler) UpdateKey(w http.ResponseWriter, r *http.Request) {
 	httpjson.RenderStatus(w, http.StatusOK, updated, httpjson.JSON)
 }
 
-func (h APIKeyHandler) DeleteApiKey(w http.ResponseWriter, r *http.Request) {
+func (h APIKeyHandler) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	keyID := chi.URLParam(r, "id")
 
-	userID, ok := ctx.Value(middleware.UserIDContextKey).(string)
-	if !ok {
+	userID, err := sdpcontext.GetUserIDFromContext(ctx)
+	if err != nil {
 		httperror.InternalError(ctx, "User identification error", nil, nil).Render(w)
 		return
 	}

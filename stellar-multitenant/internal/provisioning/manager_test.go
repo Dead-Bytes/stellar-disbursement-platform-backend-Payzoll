@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"testing"
 
-	migrate "github.com/rubenv/sql-migrate"
 	"github.com/stellar/go/clients/horizonclient"
 	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/network"
@@ -228,6 +227,19 @@ func Test_Manager_ProvisionNewTenant(t *testing.T) {
 
 				signatureStrategies[tc.accountType] = distAccSigClient
 
+				mHorizonClient.
+					On("AccountDetail", horizonclient.AccountRequest{AccountID: hostAccountKP.Address()}).
+					Return(horizon.Account{
+						AccountID: hostAccountKP.Address(),
+						Sequence:  1,
+					}, nil).
+					Once()
+
+				mHorizonClient.
+					On("SubmitTransactionWithOptions", mock.AnythingOfType("*txnbuild.Transaction"), horizonclient.SubmitTxOpts{SkipMemoRequiredCheck: true}).
+					Return(horizon.Transaction{}, nil).
+					Once()
+
 			case schema.DistributionAccountStellarDBVault:
 				distAccSigClient, err := signing.NewSignatureClient(schema.DistributionAccountStellarDBVault, signing.SignatureClientOptions{
 					DBConnectionPool:            dbConnectionPool,
@@ -253,7 +265,7 @@ func Test_Manager_ProvisionNewTenant(t *testing.T) {
 				mHorizonClient.
 					On("SubmitTransactionWithOptions", mock.AnythingOfType("*txnbuild.Transaction"), horizonclient.SubmitTxOpts{SkipMemoRequiredCheck: true}).
 					Return(horizon.Transaction{}, nil).
-					Once()
+					Times(2)
 				mHorizonClient.
 					On("AccountDetail", mock.AnythingOfType("horizonclient.AccountRequest")).
 					Run(func(args mock.Arguments) {
@@ -265,7 +277,7 @@ func Test_Manager_ProvisionNewTenant(t *testing.T) {
 						AccountID: tenantAccountKP.Address(),
 						Sequence:  1,
 					}, nil).
-					Once()
+					Times(2)
 
 				signatureStrategies[tc.accountType] = distAccSigClient
 
@@ -306,7 +318,7 @@ func Test_Manager_ProvisionNewTenant(t *testing.T) {
 				UserEmail:               userEmail,
 				OrgName:                 userOrgName,
 				NetworkType:             string(networkType),
-				UiBaseURL:               sdpUIBaseURL,
+				UIBaseURL:               sdpUIBaseURL,
 				BaseURL:                 baseURL,
 				DistributionAccountType: tc.accountType,
 			})
@@ -314,7 +326,7 @@ func Test_Manager_ProvisionNewTenant(t *testing.T) {
 
 			// STEP 6: assert the result
 			assert.Equal(t, tc.tenantName, tnt.Name)
-			assert.Equal(t, tenant.ProvisionedTenantStatus, tnt.Status)
+			assert.Equal(t, schema.ProvisionedTenantStatus, tnt.Status)
 			assert.Equal(t, sdpUIBaseURL, *tnt.SDPUIBaseURL)
 			assert.Equal(t, baseURL, *tnt.BaseURL)
 			switch tc.accountType {
@@ -371,7 +383,7 @@ func Test_Manager_ProvisionNewTenant(t *testing.T) {
 	}
 }
 
-func Test_Manager_RunMigrationsForTenant(t *testing.T) {
+func Test_Manager_applyTenantMigrations(t *testing.T) {
 	dbt := dbtest.OpenWithAdminMigrationsOnly(t)
 	defer dbt.Close()
 
@@ -428,9 +440,9 @@ func Test_Manager_RunMigrationsForTenant(t *testing.T) {
 		NativeAssetBootstrapAmount: tenant.MinTenantDistributionAccountAmount,
 	})
 	require.NoError(t, err)
-	err = p.runMigrationsForTenant(ctx, tenant1DSN, migrate.Up, 0, migrations.SDPMigrationRouter)
+	err = p.applyTenantMigrations(ctx, tenant1DSN, migrations.SDPMigrationRouter)
 	require.NoError(t, err)
-	err = p.runMigrationsForTenant(ctx, tenant1DSN, migrate.Up, 0, migrations.AuthMigrationRouter)
+	err = p.applyTenantMigrations(ctx, tenant1DSN, migrations.AuthMigrationRouter)
 	require.NoError(t, err)
 
 	tenant.TenantSchemaMatchTablesFixture(t, ctx, dbConnectionPool, tnt1SchemaName, getExpectedTablesAfterMigrationsApplied())
@@ -438,9 +450,9 @@ func Test_Manager_RunMigrationsForTenant(t *testing.T) {
 	// Asserting if the Tenant 2 DB Schema wasn't affected by Tenant 1 schema migrations
 	tenant.TenantSchemaMatchTablesFixture(t, ctx, dbConnectionPool, tnt2SchemaName, []string{})
 
-	err = p.runMigrationsForTenant(ctx, tenant2DSN, migrate.Up, 0, migrations.SDPMigrationRouter)
+	err = p.applyTenantMigrations(ctx, tenant2DSN, migrations.SDPMigrationRouter)
 	require.NoError(t, err)
-	err = p.runMigrationsForTenant(ctx, tenant2DSN, migrate.Up, 0, migrations.AuthMigrationRouter)
+	err = p.applyTenantMigrations(ctx, tenant2DSN, migrations.AuthMigrationRouter)
 	require.NoError(t, err)
 
 	tenant.TenantSchemaMatchTablesFixture(t, ctx, dbConnectionPool, tnt2SchemaName, getExpectedTablesAfterMigrationsApplied())
@@ -493,7 +505,7 @@ func Test_Manager_RollbackOnErrors(t *testing.T) {
 	lastName := "Last"
 	email := "first.last@email.com"
 	networkType := sdpUtils.TestnetNetworkType
-	tnt := tenant.Tenant{Name: tenantName, ID: "abc"}
+	tnt := schema.Tenant{Name: tenantName, ID: "abc"}
 	sdpUIBaseURL := "https://sdp-ui.stellar.org"
 	baseURL := "https://sdp-api.stellar.org"
 
@@ -555,7 +567,7 @@ func Test_Manager_RollbackOnErrors(t *testing.T) {
 					Return([]schema.TransactionAccount{distAccount}, nil)
 
 				// Needed for UpdateTenantConfig:
-				tStatus := tenant.ProvisionedTenantStatus
+				tStatus := schema.ProvisionedTenantStatus
 				updatedTnt := tnt
 				tntManagerMock.
 					On("UpdateTenantConfig", ctx, &tenant.TenantUpdate{
@@ -603,7 +615,7 @@ func Test_Manager_RollbackOnErrors(t *testing.T) {
 					Return([]schema.TransactionAccount{distAccount}, nil)
 
 				// Needed for UpdateTenantConfig:
-				tStatus := tenant.ProvisionedTenantStatus
+				tStatus := schema.ProvisionedTenantStatus
 				updatedTnt := tnt
 				updatedTnt.DistributionAccountAddress = &distAccAddress
 				updatedTnt.DistributionAccountType = schema.DistributionAccountStellarDBVault
@@ -646,7 +658,7 @@ func Test_Manager_RollbackOnErrors(t *testing.T) {
 				tntManagerMock.On("AddTenant", ctx, tenantName).Return(&tnt, nil).Once()
 
 				// Needed for createSchemaAndRunMigrations:
-				tntManagerMock.On("GetDSNForTenant", ctx, tenantName).Return(tenantDSN, nil).Once()
+				tntManagerMock.On("GetDSNForTenant", ctx, tenantName).Return(tenantDSN, nil).Twice()
 				tntManagerMock.On("CreateTenantSchema", ctx, tenantName).Return(nil).Once()
 
 				// Needed for setupTenantData (this one cannot be mocked):
@@ -665,7 +677,7 @@ func Test_Manager_RollbackOnErrors(t *testing.T) {
 					Return([]schema.TransactionAccount{distAccount}, nil)
 
 				// Needed for UpdateTenantConfig:
-				tStatus := tenant.ProvisionedTenantStatus
+				tStatus := schema.ProvisionedTenantStatus
 				updatedTnt := tnt
 				updatedTnt.DistributionAccountAddress = &distAccAddress
 				updatedTnt.DistributionAccountType = schema.DistributionAccountStellarDBVault
@@ -702,17 +714,21 @@ func Test_Manager_RollbackOnErrors(t *testing.T) {
 					On("SignStellarTransaction", ctx, mock.AnythingOfType("*txnbuild.Transaction"), hostAccount).
 					Return(&txnbuild.Transaction{}, nil).
 					Once()
+				sigRouter.
+					On("SignStellarTransaction", ctx, mock.AnythingOfType("*txnbuild.Transaction"), distAccount).
+					Return(&txnbuild.Transaction{}, nil).
+					Once()
 				mHorizonClient.
 					On("SubmitTransactionWithOptions", mock.AnythingOfType("*txnbuild.Transaction"), horizonclient.SubmitTxOpts{SkipMemoRequiredCheck: true}).
 					Return(horizon.Transaction{}, nil).
-					Once()
+					Twice()
 				mHorizonClient.
 					On("AccountDetail", mock.AnythingOfType("horizonclient.AccountRequest")).
 					Return(horizon.Account{
 						AccountID: distAccAddress,
 						Sequence:  1,
 					}, nil).
-					Once()
+					Twice()
 			},
 		},
 	}
@@ -751,7 +767,7 @@ func Test_Manager_RollbackOnErrors(t *testing.T) {
 				UserEmail:               email,
 				OrgName:                 orgName,
 				NetworkType:             string(networkType),
-				UiBaseURL:               sdpUIBaseURL,
+				UIBaseURL:               sdpUIBaseURL,
 				BaseURL:                 baseURL,
 				DistributionAccountType: accountType,
 			})
@@ -850,7 +866,7 @@ func Test_Manager_fundTenantDistributionStellarAccountIfNeeded(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := Manager{}
-			tnt := tenant.Tenant{
+			tnt := schema.Tenant{
 				ID:                         "foo-bar",
 				Name:                       "test",
 				DistributionAccountAddress: &distAccAddress,
@@ -904,18 +920,18 @@ func Test_Manager_provisionDistributionAccount(t *testing.T) {
 		prepareMocksFn    func(t *testing.T, mSigRouter *mocks.MockSignerRouter)
 		wantErrorContains string
 		wantLogContains   string
-		wantTnt           tenant.Tenant
+		wantTnt           schema.Tenant
 	}{
 		{
 			name:              "HOST.STELLAR.ENV is not supported",
 			accountType:       schema.HostStellarEnv,
-			wantTnt:           tenant.Tenant{ID: "foo-bar", Name: "test"},
+			wantTnt:           schema.Tenant{ID: "foo-bar", Name: "test"},
 			wantErrorContains: fmt.Sprintf("%v: unsupported accountType=%s", ErrProvisionTenantDistributionAccountFailed, schema.HostStellarEnv),
 		},
 		{
 			name:              "CHANNEL_ACCOUNT.STELLAR.DB is not supported",
 			accountType:       schema.ChannelAccountStellarDB,
-			wantTnt:           tenant.Tenant{ID: "foo-bar", Name: "test"},
+			wantTnt:           schema.Tenant{ID: "foo-bar", Name: "test"},
 			wantErrorContains: fmt.Sprintf("%v: unsupported accountType=%s", ErrProvisionTenantDistributionAccountFailed, schema.ChannelAccountStellarDB),
 		},
 		{
@@ -930,7 +946,7 @@ func Test_Manager_provisionDistributionAccount(t *testing.T) {
 					Return([]schema.TransactionAccount{distAccount}, signing.ErrUnsupportedCommand).
 					Once()
 			},
-			wantTnt: tenant.Tenant{
+			wantTnt: schema.Tenant{
 				ID:                         "foo-bar",
 				Name:                       "test",
 				DistributionAccountAddress: &distAccAddress,
@@ -950,7 +966,7 @@ func Test_Manager_provisionDistributionAccount(t *testing.T) {
 					Return([]schema.TransactionAccount{distAccount}, nil).
 					Once()
 			},
-			wantTnt: tenant.Tenant{
+			wantTnt: schema.Tenant{
 				ID:                         "foo-bar",
 				Name:                       "test",
 				DistributionAccountAddress: &distAccAddress,
@@ -961,7 +977,7 @@ func Test_Manager_provisionDistributionAccount(t *testing.T) {
 		{
 			name:        "DISTRIBUTION_ACCOUNT.CIRCLE.DB_VAULT is NO-OP and logs warnings accordingly",
 			accountType: schema.DistributionAccountCircleDBVault,
-			wantTnt: tenant.Tenant{
+			wantTnt: schema.Tenant{
 				ID:                        "foo-bar",
 				Name:                      "test",
 				DistributionAccountType:   schema.DistributionAccountCircleDBVault,
@@ -973,7 +989,7 @@ func Test_Manager_provisionDistributionAccount(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := Manager{}
-			tnt := &tenant.Tenant{ID: "foo-bar", Name: "test"}
+			tnt := &schema.Tenant{ID: "foo-bar", Name: "test"}
 
 			if tc.prepareMocksFn != nil {
 				mSigRouter := mocks.NewMockSignerRouter(t)

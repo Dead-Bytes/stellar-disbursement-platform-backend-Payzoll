@@ -10,14 +10,14 @@ import (
 	"time"
 
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
+	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
 	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
 
 	"github.com/stellar/go/support/log"
 
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/anchorplatform"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/crashtracker"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/monitor"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/scheduler/jobs"
 )
 
@@ -162,7 +162,7 @@ func executeJob(ctx context.Context, job jobs.Job, workerID int, crashTrackerCli
 	if job.IsJobMultiTenant() {
 		tenants, err := tenantManager.GetAllTenants(ctx, &tenant.QueryParams{
 			Filters: map[tenant.FilterKey]interface{}{
-				tenant.FilterKeyStatus: []tenant.TenantStatus{tenant.ProvisionedTenantStatus, tenant.ActivatedTenantStatus},
+				tenant.FilterKeyStatus: []schema.TenantStatus{schema.ProvisionedTenantStatus, schema.ActivatedTenantStatus},
 			},
 		})
 		if err != nil {
@@ -172,7 +172,7 @@ func executeJob(ctx context.Context, job jobs.Job, workerID int, crashTrackerCli
 		}
 		for _, t := range tenants {
 			log.Ctx(ctx).Debugf("Processing job %s for tenant %s on worker %d", job.GetName(), t.ID, workerID)
-			tenantCtx := tenant.SaveTenantInContext(ctx, &t)
+			tenantCtx := sdpcontext.SetTenantInContext(ctx, &t)
 			if err = job.Execute(tenantCtx); err != nil {
 				msg := fmt.Sprintf("error processing job %s for tenant %s on worker %d", job.GetName(), t.ID, workerID)
 				crashTrackerClient.LogAndReportErrors(tenantCtx, err, msg)
@@ -184,16 +184,6 @@ func executeJob(ctx context.Context, job jobs.Job, workerID int, crashTrackerCli
 			msg := fmt.Sprintf("error processing job %s on worker %d", job.GetName(), workerID)
 			crashTrackerClient.LogAndReportErrors(ctx, err, msg)
 		}
-	}
-}
-
-func WithAPAuthEnforcementJob(apService anchorplatform.AnchorPlatformAPIServiceInterface, monitorService monitor.MonitorServiceInterface, crashTrackerClient crashtracker.CrashTrackerClient) SchedulerJobRegisterOption {
-	return func(s *Scheduler) {
-		j, err := jobs.NewAnchorPlatformAuthMonitoringJob(apService, monitorService, crashTrackerClient)
-		if err != nil {
-			log.Errorf("error creating %s job: %s", j.GetName(), err)
-		}
-		s.addJob(j)
 	}
 }
 
@@ -235,13 +225,6 @@ func WithPaymentFromSubmitterJobOption(paymentJobInterval int, models *data.Mode
 func WithSendReceiverWalletsInvitationJobOption(o jobs.SendReceiverWalletsInvitationJobOptions) SchedulerJobRegisterOption {
 	return func(s *Scheduler) {
 		j := jobs.NewSendReceiverWalletsInvitationJob(o)
-		s.addJob(j)
-	}
-}
-
-func WithPatchAnchorPlatformTransactionsCompletionJobOption(paymentJobInterval int, apAPISvc anchorplatform.AnchorPlatformAPIServiceInterface, models *data.Models) SchedulerJobRegisterOption {
-	return func(s *Scheduler) {
-		j := jobs.NewPatchAnchorPlatformTransactionsCompletionJob(paymentJobInterval, apAPISvc, models)
 		s.addJob(j)
 	}
 }

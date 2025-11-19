@@ -3,20 +3,68 @@ package utils
 import (
 	"fmt"
 	"go/types"
+	"strings"
 
 	"github.com/stellar/go/clients/horizonclient"
 	"github.com/stellar/go/network"
 	"github.com/stellar/go/support/config"
 	"github.com/stellar/go/txnbuild"
 
+	"github.com/stellar/stellar-disbursement-platform-backend/db"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/crashtracker"
 	di "github.com/stellar/stellar-disbursement-platform-backend/internal/dependencyinjection"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/events"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/message"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/scheduler"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/transactionsubmission/engine/signing"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/utils"
 	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
 )
+
+// DBPoolOptions contains tunables for the PostgreSQL connection pool.
+type DBPoolOptions struct {
+	DBMaxOpenConns           int
+	DBMaxIdleConns           int
+	DBConnMaxIdleTimeSeconds int
+	DBConnMaxLifetimeSeconds int
+}
+
+// DBPoolConfigOptions returns config options for tuning the DB connection pool.
+func DBPoolConfigOptions(opts *DBPoolOptions) []*config.ConfigOption {
+	return []*config.ConfigOption{
+		{
+			Name:        "db-max-open-conns",
+			Usage:       "Maximum number of open DB connections per pool",
+			OptType:     types.Int,
+			ConfigKey:   &opts.DBMaxOpenConns,
+			FlagDefault: db.DefaultDBPoolConfig.MaxOpenConns,
+			Required:    false,
+		},
+		{
+			Name:        "db-max-idle-conns",
+			Usage:       "Maximum number of idle DB connections retained per pool",
+			OptType:     types.Int,
+			ConfigKey:   &opts.DBMaxIdleConns,
+			FlagDefault: db.DefaultDBPoolConfig.MaxIdleConns,
+			Required:    false,
+		},
+		{
+			Name:        "db-conn-max-idle-time-seconds",
+			Usage:       "Maximum idle time in seconds before a connection is closed",
+			OptType:     types.Int,
+			ConfigKey:   &opts.DBConnMaxIdleTimeSeconds,
+			FlagDefault: db.DefaultConnMaxIdleTimeSeconds,
+			Required:    false,
+		},
+		{
+			Name:        "db-conn-max-lifetime-seconds",
+			Usage:       "Maximum lifetime in seconds for a single connection",
+			OptType:     types.Int,
+			ConfigKey:   &opts.DBConnMaxLifetimeSeconds,
+			FlagDefault: db.DefaultConnMaxLifetimeSeconds,
+			Required:    false,
+		},
+	}
+}
 
 // TwilioConfigOptions returns the config options for Twilio. Relevant for loading configs needed for the messenger type(s): `TWILIO_*`.
 func TwilioConfigOptions(opts *message.MessengerOptions) []*config.ConfigOption {
@@ -40,6 +88,28 @@ func TwilioConfigOptions(opts *message.MessengerOptions) []*config.ConfigOption 
 			Usage:     "The service ID used within Twilio to send messages",
 			OptType:   types.String,
 			ConfigKey: &opts.TwilioServiceSID,
+			Required:  false,
+		},
+		// Twilio WhatsApp
+		{
+			Name:      "twilio-whatsapp-from-number",
+			Usage:     "The WhatsApp Business number used to send messages (with whatsapp: prefix)",
+			OptType:   types.String,
+			ConfigKey: &opts.TwilioWhatsAppFromNumber,
+			Required:  false,
+		},
+		{
+			Name:      "twilio-whatsapp-receiver-invitation-template-sid",
+			Usage:     "The Twilio Content SID for WhatsApp receiver invitation template (starts with HX)",
+			OptType:   types.String,
+			ConfigKey: &opts.TwilioWhatsAppReceiverInvitationTemplateSID,
+			Required:  false,
+		},
+		{
+			Name:      "twilio-whatsapp-receiver-otp-template-sid",
+			Usage:     "The Twilio Content SID for WhatsApp receiver OTP template (starts with HX)",
+			OptType:   types.String,
+			ConfigKey: &opts.TwilioWhatsAppReceiverOTPTemplateSID,
 			Required:  false,
 		},
 		// Twilio Email (SendGrid)
@@ -144,85 +214,6 @@ func SingleTenantRoutingConfigOptions(opts *TenantRoutingOptions) *config.Config
 	}
 }
 
-type EventBrokerOptions struct {
-	EventBrokerType events.EventBrokerType
-	BrokerURLs      []string
-	ConsumerGroupID string
-
-	// KAFKA specific options
-	KafkaSecurityProtocol  events.KafkaSecurityProtocol
-	KafkaSASLUsername      string
-	KafkaSASLPassword      string
-	KafkaAccessKey         string
-	KafkaAccessCertificate string
-}
-
-func EventBrokerConfigOptions(opts *EventBrokerOptions) []*config.ConfigOption {
-	return []*config.ConfigOption{
-		{
-			Name:           "event-broker-type",
-			Usage:          `Specifies the type of event broker to be used. Options: "KAFKA", "NONE".`,
-			OptType:        types.String,
-			ConfigKey:      &opts.EventBrokerType,
-			CustomSetValue: SetConfigOptionEventBrokerType,
-			FlagDefault:    string(events.KafkaEventBrokerType),
-			Required:       true,
-		},
-		{
-			Name:           "broker-urls",
-			Usage:          "A comma-separated list of the message broker URLs.",
-			OptType:        types.String,
-			ConfigKey:      &opts.BrokerURLs,
-			CustomSetValue: SetConfigOptionURLList,
-			Required:       false,
-		},
-		{
-			Name:      "consumer-group-id",
-			Usage:     "Specifies a group ID for the broker consumers.",
-			OptType:   types.String,
-			ConfigKey: &opts.ConsumerGroupID,
-			Required:  false,
-		},
-
-		{
-			Name:           "kafka-security-protocol",
-			Usage:          "Kafka Security Protocol. Options: PLAINTEXT, SASL_PLAINTEXT, SASL_SSL, SSL",
-			OptType:        types.String,
-			CustomSetValue: SetConfigOptionKafkaSecurityProtocol,
-			ConfigKey:      &opts.KafkaSecurityProtocol,
-			Required:       false,
-		},
-		{
-			Name:      "kafka-sasl-username",
-			Usage:     "Specifies the Kafka SASL Username, required when the kafka security protocol is set to either `SASL_PLAINTEXT` or `SASL_SSL`.",
-			OptType:   types.String,
-			ConfigKey: &opts.KafkaSASLUsername,
-			Required:  false,
-		},
-		{
-			Name:      "kafka-sasl-password",
-			Usage:     "Specifies the Kafka SASL Password, required when the kafka security protocol is set to either `SASL_PLAINTEXT` or `SASL_SSL`.",
-			OptType:   types.String,
-			ConfigKey: &opts.KafkaSASLPassword,
-			Required:  false,
-		},
-		{
-			Name:      "kafka-ssl-access-key",
-			Usage:     "The Kafka Access Key (keystore) in PEM format, required when the kafka security protocol is set to `SSL`.",
-			OptType:   types.String,
-			ConfigKey: &opts.KafkaAccessKey,
-			Required:  false,
-		},
-		{
-			Name:      "kafka-ssl-access-certificate",
-			Usage:     "The Kafka SSL Access Certificate in PEM format that matches with the Kafka Access Key, required when the kafka security protocol is set to `SSL`.",
-			OptType:   types.String,
-			ConfigKey: &opts.KafkaAccessCertificate,
-			Required:  false,
-		},
-	}
-}
-
 func TransactionSubmitterEngineConfigOptions(opts *di.TxSubmitterEngineOptions) config.ConfigOptions {
 	return append(
 		BaseSignatureServiceConfigOptions(&opts.SignatureServiceOptions),
@@ -322,12 +313,24 @@ type BridgeIntegrationOptions struct {
 }
 
 func (opts *BridgeIntegrationOptions) ValidateFlags() error {
-	if opts.EnableBridgeIntegration && opts.BridgeAPIKey == "" {
+	if !opts.EnableBridgeIntegration {
+		return nil
+	}
+
+	if strings.TrimSpace(opts.BridgeAPIKey) == "" {
 		return fmt.Errorf("bridge API key must be set when bridge integration is enabled")
 	}
-	if opts.EnableBridgeIntegration && opts.BridgeBaseURL == "" {
+	if strings.TrimSpace(opts.BridgeBaseURL) == "" {
 		return fmt.Errorf("bridge base URL must be set when bridge integration is enabled")
 	}
+	isBaseURL, err := utils.IsBaseURL(opts.BridgeBaseURL)
+	if err != nil {
+		return fmt.Errorf("validating bridge base URL: %w", err)
+	}
+	if !isBaseURL {
+		return fmt.Errorf("bridge base URL must be a base URL e.g. `https://api.bridge.xyz`")
+	}
+
 	return nil
 }
 
@@ -346,7 +349,7 @@ func BridgeIntegrationConfigOptions(opts *BridgeIntegrationOptions) []*config.Co
 			Usage:       "Bridge Base URL. This needs to be configured only if the Bridge integration is enabled.",
 			OptType:     types.String,
 			ConfigKey:   &opts.BridgeBaseURL,
-			FlagDefault: "https://api.sandbox.bridge.xyz",
+			FlagDefault: "https://api.bridge.xyz",
 			Required:    false,
 		},
 		{
@@ -389,16 +392,5 @@ func HorizonURL(targetPointer interface{}) *config.ConfigOption {
 		ConfigKey:   targetPointer,
 		FlagDefault: horizonclient.DefaultTestNetClient.HorizonURL,
 		Required:    true,
-	}
-}
-
-func KafkaConfig(opts EventBrokerOptions) events.KafkaConfig {
-	return events.KafkaConfig{
-		Brokers:              opts.BrokerURLs,
-		SecurityProtocol:     opts.KafkaSecurityProtocol,
-		SASLUsername:         opts.KafkaSASLUsername,
-		SASLPassword:         opts.KafkaSASLPassword,
-		SSLAccessKey:         opts.KafkaAccessKey,
-		SSLAccessCertificate: opts.KafkaAccessCertificate,
 	}
 }

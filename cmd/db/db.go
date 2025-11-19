@@ -16,6 +16,7 @@ import (
 	di "github.com/stellar/stellar-disbursement-platform-backend/internal/dependencyinjection"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/services"
 	sdpUtils "github.com/stellar/stellar-disbursement-platform-backend/internal/utils"
+	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
 	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
 )
 
@@ -32,7 +33,13 @@ func (c *DatabaseCommand) Command(globalOptions *utils.GlobalOptionsType) *cobra
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			utils.PropagatePersistentPreRun(cmd, args)
 
-			adminDBConnectionPool, err := di.NewAdminDBConnectionPool(cmd.Context(), di.DBConnectionPoolOptions{DatabaseURL: globalOptions.DatabaseURL})
+			adminDBConnectionPool, err := di.NewAdminDBConnectionPool(cmd.Context(), di.DBConnectionPoolOptions{
+				DatabaseURL:            globalOptions.DatabaseURL,
+				MaxOpenConns:           globalOptions.DBPool.DBMaxOpenConns,
+				MaxIdleConns:           globalOptions.DBPool.DBMaxIdleConns,
+				ConnMaxIdleTimeSeconds: globalOptions.DBPool.DBConnMaxIdleTimeSeconds,
+				ConnMaxLifetimeSeconds: globalOptions.DBPool.DBConnMaxLifetimeSeconds,
+			})
 			if err != nil {
 				log.Ctx(cmd.Context()).Fatalf("getting Admin database connection pool: %v", err)
 			}
@@ -91,7 +98,7 @@ func (c *DatabaseCommand) setupForNetworkCmd(globalOptions *utils.GlobalOptionsT
 			if err != nil {
 				log.Ctx(ctx).Fatalf("getting all tenants: %v", err)
 			}
-			tenantsByID := make(map[string]tenant.Tenant, len(tenants))
+			tenantsByID := make(map[string]schema.Tenant, len(tenants))
 			for _, tnt := range tenants {
 				tenantsByID[tnt.ID] = tnt
 			}
@@ -116,7 +123,7 @@ func (c *DatabaseCommand) setupForNetworkCmd(globalOptions *utils.GlobalOptionsT
 				if err != nil {
 					log.Ctx(ctx).Fatalf("error connection to the database: %s", err.Error())
 				}
-				defer tenantDBConnectionPool.Close()
+				defer sdpUtils.DeferredClose(ctx, tenantDBConnectionPool, "closing tenant db connection pool")
 
 				if err := services.SetupAssetsForProperNetwork(ctx, tenantDBConnectionPool, networkType, tnt.DistributionAccountType.Platform()); err != nil {
 					log.Ctx(ctx).Fatalf("error upserting assets for proper network: %s", err.Error())
@@ -224,7 +231,7 @@ func (c *DatabaseCommand) adminMigrationsCmd(ctx context.Context, globalOptions 
 		if err != nil {
 			return fmt.Errorf("creating admin database migration manager: %w", err)
 		}
-		defer schemaMigrationManager.Close()
+		defer sdpUtils.DeferredClose(ctx, schemaMigrationManager, "closing admin database migration manager")
 
 		if err = schemaMigrationManager.OrchestrateSchemaMigrations(ctx, dir, count); err != nil {
 			return fmt.Errorf("running admin migrations: %w", err)
@@ -257,7 +264,7 @@ func (c *DatabaseCommand) tssMigrationsCmd(ctx context.Context, globalOptions *u
 		if err != nil {
 			return fmt.Errorf("creating TSS database migration manager: %w", err)
 		}
-		defer schemaMigrationManager.Close()
+		defer sdpUtils.DeferredClose(ctx, schemaMigrationManager, "closing TSS database migration manager")
 
 		if err = schemaMigrationManager.OrchestrateSchemaMigrations(ctx, dir, count); err != nil {
 			return fmt.Errorf("running TSS migrations: %w", err)

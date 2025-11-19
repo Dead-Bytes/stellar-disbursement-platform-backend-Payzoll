@@ -5,20 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/stellar/go/strkey"
 	"github.com/stellar/go/support/render/httpjson"
 
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/dto"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httperror"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httpresponse"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/validators"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/utils"
-	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
 )
 
 type ReceiverHandler struct {
@@ -30,96 +27,6 @@ type GetReceiverResponse struct {
 	data.Receiver
 	Wallets       []data.ReceiverWallet       `json:"wallets"`
 	Verifications []data.ReceiverVerification `json:"verifications,omitempty"`
-}
-
-type CreateReceiverRequest struct {
-	Email         string                `json:"email"`
-	PhoneNumber   string                `json:"phone_number"`
-	ExternalID    string                `json:"external_id"`
-	Verifications []VerificationRequest `json:"verifications"`
-	Wallets       []WalletRequest       `json:"wallets"`
-}
-
-type VerificationRequest struct {
-	Type  data.VerificationType `json:"type"`
-	Value string                `json:"value"`
-}
-
-type WalletRequest struct {
-	Address string `json:"address"`
-	Memo    string `json:"memo,omitempty"`
-}
-
-func (r *CreateReceiverRequest) Validate() error {
-	if r.Email == "" && r.PhoneNumber == "" {
-		return errors.New("either email or phone_number must be provided")
-	}
-
-	if r.Email != "" {
-		if err := utils.ValidateEmail(r.Email); err != nil {
-			return fmt.Errorf("validating email: %w", err)
-		}
-	}
-
-	if r.PhoneNumber != "" {
-		if err := utils.ValidatePhoneNumber(r.PhoneNumber); err != nil {
-			return fmt.Errorf("validating phone_number: %w", err)
-		}
-	}
-
-	if r.ExternalID == "" {
-		return errors.New("external_id is required")
-	}
-
-	if len(r.Verifications) == 0 && len(r.Wallets) == 0 {
-		return errors.New("either verifications or wallets must be provided")
-	}
-
-	if len(r.Wallets) > 1 {
-		return errors.New("only one wallet is allowed per receiver")
-	}
-
-	for i, v := range r.Verifications {
-		if v.Type == "" {
-			return fmt.Errorf("verification[%d].type is required", i)
-		}
-		if v.Value == "" {
-			return fmt.Errorf("verification[%d].value is required", i)
-		}
-
-		switch v.Type {
-		case data.VerificationTypeDateOfBirth:
-			if _, err := time.Parse("2006-01-02", v.Value); err != nil {
-				return fmt.Errorf("invalid date of birth format for verification[%d]: must be YYYY-MM-DD", i)
-			}
-		case data.VerificationTypePin:
-			if len(v.Value) < 4 || len(v.Value) > 8 {
-				return fmt.Errorf("invalid PIN for verification[%d]: must be between 4 and 8 characters", i)
-			}
-		case data.VerificationTypeNationalID:
-			if len(v.Value) > 50 {
-				return fmt.Errorf("invalid national ID for verification[%d]: must be at most 50 characters", i)
-			}
-		case data.VerificationTypeYearMonth:
-			if _, err := time.Parse("2006-01", v.Value); err != nil {
-				return fmt.Errorf("invalid year-month format for verification[%d]: must be YYYY-MM", i)
-			}
-		default:
-			return fmt.Errorf("invalid verification type for verification[%d]: %s", i, v.Type)
-		}
-	}
-
-	for i, w := range r.Wallets {
-		if w.Address == "" {
-			return fmt.Errorf("wallet[%d].address is required", i)
-		}
-
-		if !strkey.IsValidEd25519PublicKey(w.Address) {
-			return fmt.Errorf("invalid stellar address for wallet[%d]", i)
-		}
-	}
-
-	return nil
 }
 
 func (rh ReceiverHandler) buildReceiversResponse(receivers []data.Receiver, receiversWallets []data.ReceiverWallet) []GetReceiverResponse {
@@ -156,7 +63,7 @@ func (rh ReceiverHandler) GetReceiver(w http.ResponseWriter, r *http.Request) {
 			return nil, fmt.Errorf("getting receiver wallets with receiver IDs: %w", innerErr)
 		}
 
-		receiverVerifications, innerErr := rh.Models.ReceiverVerification.GetAllByReceiverId(ctx, dbTx, receiver.ID)
+		receiverVerifications, innerErr := rh.Models.ReceiverVerification.GetAllByReceiverID(ctx, dbTx, receiver.ID)
 		if innerErr != nil {
 			return nil, fmt.Errorf("getting receiver verifications for receiver ID: %w", innerErr)
 		}
@@ -231,23 +138,25 @@ func (rh ReceiverHandler) GetReceivers(w http.ResponseWriter, r *http.Request) {
 	httpjson.RenderStatus(w, http.StatusOK, httpResponse, httpjson.JSON)
 }
 
-// GetReceiverVerification returns a list of verification types
+// GetReceiverVerificationTypes returns a list of verification types.
 func (rh ReceiverHandler) GetReceiverVerificationTypes(w http.ResponseWriter, r *http.Request) {
 	httpjson.Render(w, data.GetAllVerificationTypes(), httpjson.JSON)
 }
 
-func (rh ReceiverHandler) CreateReceiver(w http.ResponseWriter, r *http.Request) {
+func (rh ReceiverHandler) CreateReceiver(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var err error
 
-	var req CreateReceiverRequest
+	var req dto.CreateReceiverRequest
 	if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httperror.BadRequest("invalid request body", err, nil).Render(w)
+		httperror.BadRequest("invalid request body", err, nil).Render(rw)
 		return
 	}
 
-	if err = req.Validate(); err != nil {
-		httperror.BadRequest("validation error", err, nil).Render(w)
+	validator := validators.NewReceiverValidator()
+	validator.ValidateCreateReceiverRequest(&req)
+	if validator.HasErrors() {
+		httperror.BadRequest("validation error", nil, validator.Errors).Render(rw)
 		return
 	}
 
@@ -259,7 +168,7 @@ func (rh ReceiverHandler) CreateReceiver(w http.ResponseWriter, r *http.Request)
 		receiverInsert := data.ReceiverInsert{
 			Email:       &req.Email,
 			PhoneNumber: &req.PhoneNumber,
-			ExternalId:  &req.ExternalID,
+			ExternalID:  &req.ExternalID,
 		}
 
 		if req.Email == "" {
@@ -314,19 +223,22 @@ func (rh ReceiverHandler) CreateReceiver(w http.ResponseWriter, r *http.Request)
 				}
 
 				var receiverWalletID string
-				if receiverWalletID, txErr = rh.Models.ReceiverWallet.Insert(ctx, dbTx, walletInsert); txErr != nil {
+				if receiverWalletID, txErr = rh.Models.ReceiverWallet.GetOrInsertReceiverWallet(ctx, dbTx, walletInsert); txErr != nil {
 					return nil, fmt.Errorf("creating receiver wallet: %w", txErr)
 				}
 
 				// Update wallet with Stellar address and memo details
 				walletUpdate := data.ReceiverWalletUpdate{
-					Status:         data.ReadyReceiversWalletStatus,
+					Status:         data.RegisteredReceiversWalletStatus,
 					StellarAddress: w.Address,
 				}
 
 				// Only set memo and memo type if memo is provided
 				if w.Memo != "" {
-					memoType := schema.MemoTypeID
+					memoType, memoErr := validators.ValidateWalletAddressMemo(w.Address, w.Memo)
+					if memoErr != nil {
+						return nil, fmt.Errorf("validating memo value: %w", memoErr)
+					}
 					walletUpdate.StellarMemo = &w.Memo
 					walletUpdate.StellarMemoType = &memoType
 				}
@@ -346,7 +258,7 @@ func (rh ReceiverHandler) CreateReceiver(w http.ResponseWriter, r *http.Request)
 
 		// Step 5: Retrieve verification records for response
 		var receiverVerifications []data.ReceiverVerification
-		if receiverVerifications, txErr = rh.Models.ReceiverVerification.GetAllByReceiverId(ctx, dbTx, receiver.ID); txErr != nil {
+		if receiverVerifications, txErr = rh.Models.ReceiverVerification.GetAllByReceiverID(ctx, dbTx, receiver.ID); txErr != nil {
 			return nil, fmt.Errorf("getting receiver verifications: %w", txErr)
 		}
 
@@ -357,9 +269,14 @@ func (rh ReceiverHandler) CreateReceiver(w http.ResponseWriter, r *http.Request)
 		}, nil
 	})
 	if err != nil {
-		httperror.InternalError(ctx, "Error creating receiver", err, nil).Render(w)
+		if httpErr := parseConflictErrorIfNeeded(err); httpErr != nil {
+			httpErr.Render(rw)
+			return
+		}
+
+		httperror.InternalError(ctx, "Error creating receiver", err, nil).Render(rw)
 		return
 	}
 
-	httpjson.RenderStatus(w, http.StatusCreated, response, httpjson.JSON)
+	httpjson.RenderStatus(rw, http.StatusCreated, response, httpjson.JSON)
 }

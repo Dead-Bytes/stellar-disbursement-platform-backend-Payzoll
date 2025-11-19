@@ -33,22 +33,27 @@ type ChAccCmdServiceInterface interface {
 type ChAccCmdService struct{}
 
 func (s *ChAccCmdService) ViewChannelAccounts(ctx context.Context, dbConnectionPool db.DBConnectionPool) error {
+	//nolint:wrapcheck // This is a wrapper method
 	return txSubSvc.ViewChannelAccounts(ctx, dbConnectionPool)
 }
 
 func (s *ChAccCmdService) CreateChannelAccounts(ctx context.Context, chAccService txSubSvc.ChannelAccountsService, count int) error {
+	//nolint:wrapcheck // This is a wrapper method
 	return chAccService.CreateChannelAccounts(ctx, count)
 }
 
 func (s *ChAccCmdService) EnsureChannelAccountsCount(ctx context.Context, chAccService txSubSvc.ChannelAccountsService, count int) error {
+	//nolint:wrapcheck // This is a wrapper method
 	return chAccService.EnsureChannelAccountsCount(ctx, count)
 }
 
 func (s *ChAccCmdService) DeleteChannelAccount(ctx context.Context, chAccService txSubSvc.ChannelAccountsService, opts txSubSvc.DeleteChannelAccountsOptions) error {
+	//nolint:wrapcheck // This is a wrapper method
 	return chAccService.DeleteChannelAccount(ctx, opts)
 }
 
 func (s *ChAccCmdService) VerifyChannelAccounts(ctx context.Context, chAccService txSubSvc.ChannelAccountsService, deleteInvalidAccounts bool) error {
+	//nolint:wrapcheck // This is a wrapper method
 	return chAccService.VerifyChannelAccounts(ctx, deleteInvalidAccounts)
 }
 
@@ -128,7 +133,14 @@ func (c *ChannelAccountsCommand) Command(cmdService ChAccCmdServiceInterface) *c
 			metricsServeOpts.MonitorService = &tssMonitorSvc
 
 			// Setup the TSSDBConnectionPool
-			dbcpOptions := di.DBConnectionPoolOptions{DatabaseURL: globalOptions.DatabaseURL, MonitorService: &tssMonitorSvc}
+			dbcpOptions := di.DBConnectionPoolOptions{
+				DatabaseURL:            globalOptions.DatabaseURL,
+				MonitorService:         &tssMonitorSvc,
+				MaxOpenConns:           globalOptions.DBPool.DBMaxOpenConns,
+				MaxIdleConns:           globalOptions.DBPool.DBMaxIdleConns,
+				ConnMaxIdleTimeSeconds: globalOptions.DBPool.DBConnMaxIdleTimeSeconds,
+				ConnMaxLifetimeSeconds: globalOptions.DBPool.DBConnMaxLifetimeSeconds,
+			}
 			c.TSSDBConnectionPool, err = di.NewTSSDBConnectionPool(ctx, dbcpOptions)
 			if err != nil {
 				log.Ctx(ctx).Fatalf("Error creating TSS DB connection pool: %v", err)

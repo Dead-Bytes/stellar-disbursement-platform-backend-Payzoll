@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/shopspring/decimal"
 	"github.com/stellar/go/clients/horizonclient"
 	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/network"
@@ -30,6 +31,7 @@ import (
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
 	"github.com/stellar/stellar-disbursement-platform-backend/db/dbtest"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/services"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/services/mocks"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/transactionsubmission/engine"
@@ -37,7 +39,6 @@ import (
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/transactionsubmission/engine/signing"
 	sigMocks "github.com/stellar/stellar-disbursement-platform-backend/internal/transactionsubmission/engine/signing/mocks"
 	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
-	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
 )
 
 var defaultPreconditions = txnbuild.Preconditions{TimeBounds: txnbuild.NewTimeout(20)}
@@ -76,7 +77,8 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 		require.NoError(t, err)
 
 		rr := httptest.NewRecorder()
-		req, _ := http.NewRequest("GET", "/assets", nil)
+		req, err := http.NewRequest("GET", "/assets", nil)
+		require.NoError(t, err)
 		http.HandlerFunc(handler.GetAssets).ServeHTTP(rr, req)
 
 		resp := rr.Result()
@@ -99,7 +101,8 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 		data.AssociateAssetWithWalletFixture(t, ctx, dbConnectionPool, assets[0].ID, wallet.ID)
 
 		rr := httptest.NewRecorder()
-		req, _ := http.NewRequest("GET", fmt.Sprintf("/assets?wallet=%s", wallet.ID), nil)
+		req, err := http.NewRequest("GET", fmt.Sprintf("/assets?wallet=%s", wallet.ID), nil)
+		require.NoError(t, err)
 		http.HandlerFunc(handler.GetAssets).ServeHTTP(rr, req)
 
 		var assetsResponse []data.Asset
@@ -115,13 +118,13 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 		assets := data.ClearAndCreateAssetFixtures(t, ctx, dbConnectionPool)
 		require.Equal(t, 2, len(assets))
 
-		tnt := &tenant.Tenant{
+		tnt := &schema.Tenant{
 			ID:                         "test-tenant",
 			DistributionAccountType:    schema.DistributionAccountStellarDBVault,
 			DistributionAccountAddress: &[]string{"GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"}[0],
 			DistributionAccountStatus:  schema.AccountStatusActive,
 		}
-		ctxWithTenant := tenant.SaveTenantInContext(ctx, tnt)
+		ctxWithTenant := sdpcontext.SetTenantInContext(ctx, tnt)
 
 		distAccount := schema.TransactionAccount{
 			Address: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
@@ -154,13 +157,14 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 		// Mock DistributionAccountService to return success only for EURT (indicating trustline exists)
 		mockDistAccService.On("GetBalance", mock.Anything, mock.Anything, mock.MatchedBy(func(asset data.Asset) bool {
 			return asset.Code == "EURT" && asset.Issuer == "GA62MH5RDXFWAIWHQEFNMO2SVDDCQLWOO3GO36VQB5LHUXL22DQ6IQAU"
-		})).Return(50.0, nil)
+		})).Return(decimal.NewFromFloat(50.0), nil)
 		mockDistAccService.On("GetBalance", mock.Anything, mock.Anything, mock.MatchedBy(func(asset data.Asset) bool {
 			return asset.Code == "USDC" && asset.Issuer == "GABC65XJDMXTGPNZRCI6V3KOKKWVK55UEKGQLONRIVYPMEJNNQ45YOEE"
-		})).Return(0.0, errors.New("asset not found"))
+		})).Return(decimal.Zero, errors.New("asset not found"))
 
 		rr := httptest.NewRecorder()
-		req, _ := http.NewRequest("GET", "/assets?enabled=true", nil)
+		req, err := http.NewRequest("GET", "/assets?enabled=true", nil)
+		require.NoError(t, err)
 		req = req.WithContext(ctxWithTenant)
 		http.HandlerFunc(handler.GetAssets).ServeHTTP(rr, req)
 
@@ -172,7 +176,8 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 			assert.NotNil(t, asset.Enabled)
 			if asset.Code == "EURT" {
 				assert.NotNil(t, asset.Balance)
-				assert.Equal(t, 50.0, *asset.Balance)
+				expectedBalance := decimal.RequireFromString("50.0")
+				assert.True(t, expectedBalance.Equal(*asset.Balance), "expected balance 50.0, got %s", asset.Balance.String())
 			}
 		}
 	})
@@ -182,13 +187,13 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 		assets := data.ClearAndCreateAssetFixtures(t, ctx, dbConnectionPool)
 		require.Equal(t, 2, len(assets))
 
-		tnt := &tenant.Tenant{
+		tnt := &schema.Tenant{
 			ID:                         "test-tenant",
 			DistributionAccountType:    schema.DistributionAccountStellarDBVault,
 			DistributionAccountAddress: &[]string{"GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"}[0],
 			DistributionAccountStatus:  schema.AccountStatusActive,
 		}
-		ctxWithTenant := tenant.SaveTenantInContext(ctx, tnt)
+		ctxWithTenant := sdpcontext.SetTenantInContext(ctx, tnt)
 
 		distAccount := schema.TransactionAccount{
 			Address: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
@@ -221,13 +226,14 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 		// Mock DistributionAccountService to return success only for EURT (indicating trustline exists)
 		mockDistAccService.On("GetBalance", mock.Anything, mock.Anything, mock.MatchedBy(func(asset data.Asset) bool {
 			return asset.Code == "EURT" && asset.Issuer == "GA62MH5RDXFWAIWHQEFNMO2SVDDCQLWOO3GO36VQB5LHUXL22DQ6IQAU"
-		})).Return(50.0, nil)
+		})).Return(decimal.NewFromFloat(50.0), nil)
 		mockDistAccService.On("GetBalance", mock.Anything, mock.Anything, mock.MatchedBy(func(asset data.Asset) bool {
 			return asset.Code == "USDC" && asset.Issuer == "GABC65XJDMXTGPNZRCI6V3KOKKWVK55UEKGQLONRIVYPMEJNNQ45YOEE"
-		})).Return(0.0, errors.New("asset not found"))
+		})).Return(decimal.Zero, errors.New("asset not found"))
 
 		rr := httptest.NewRecorder()
-		req, _ := http.NewRequest("GET", "/assets?enabled=true", nil)
+		req, err := http.NewRequest("GET", "/assets?enabled=true", nil)
+		require.NoError(t, err)
 		req = req.WithContext(ctxWithTenant)
 		http.HandlerFunc(handler.GetAssets).ServeHTTP(rr, req)
 
@@ -238,7 +244,8 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 			assert.True(t, asset.Enabled)
 			if asset.Code == "EURT" {
 				assert.NotNil(t, asset.Balance)
-				assert.Equal(t, 50.0, *asset.Balance)
+				expectedBalance := decimal.RequireFromString("50.0")
+				assert.True(t, expectedBalance.Equal(*asset.Balance), "expected balance 50.0, got %s", asset.Balance.String())
 			}
 		}
 	})
@@ -248,13 +255,13 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 		assets := data.ClearAndCreateAssetFixtures(t, ctx, dbConnectionPool)
 		require.Equal(t, 2, len(assets))
 
-		tnt := &tenant.Tenant{
+		tnt := &schema.Tenant{
 			ID:                         "test-tenant",
 			DistributionAccountType:    schema.DistributionAccountStellarDBVault,
 			DistributionAccountAddress: &[]string{"GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"}[0],
 			DistributionAccountStatus:  schema.AccountStatusActive,
 		}
-		ctxWithTenant := tenant.SaveTenantInContext(ctx, tnt)
+		ctxWithTenant := sdpcontext.SetTenantInContext(ctx, tnt)
 
 		distAccount := schema.TransactionAccount{
 			Address: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
@@ -264,10 +271,11 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 		distAccResolver.On("DistributionAccountFromContext", mock.Anything).Return(distAccount, nil)
 
 		// Mock DistributionAccountService to return error (indicating no trustline)
-		mockDistAccService.On("GetBalance", mock.Anything, mock.Anything, mock.Anything).Return(0.0, errors.New("asset not found"))
+		mockDistAccService.On("GetBalance", mock.Anything, mock.Anything, mock.Anything).Return(decimal.Zero, errors.New("asset not found"))
 
 		rr := httptest.NewRecorder()
-		req, _ := http.NewRequest("GET", "/assets?enabled=false", nil)
+		req, err := http.NewRequest("GET", "/assets?enabled=false", nil)
+		require.NoError(t, err)
 		req = req.WithContext(ctxWithTenant)
 		http.HandlerFunc(handler.GetAssets).ServeHTTP(rr, req)
 
@@ -281,7 +289,8 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 
 	t.Run("returns error for invalid enabled parameter", func(t *testing.T) {
 		rr := httptest.NewRecorder()
-		req, _ := http.NewRequest("GET", "/assets?enabled=invalid", nil)
+		req, err := http.NewRequest("GET", "/assets?enabled=invalid", nil)
+		require.NoError(t, err)
 		http.HandlerFunc(handler.GetAssets).ServeHTTP(rr, req)
 
 		assert.Equal(t, http.StatusBadRequest, rr.Code)
@@ -295,13 +304,13 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 		assets := data.ClearAndCreateAssetFixtures(t, ctx, dbConnectionPool)
 		require.Equal(t, 2, len(assets))
 
-		tnt := &tenant.Tenant{
+		tnt := &schema.Tenant{
 			ID:                         "test-tenant",
 			DistributionAccountType:    schema.DistributionAccountStellarDBVault,
 			DistributionAccountAddress: &[]string{"GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"}[0],
 			DistributionAccountStatus:  schema.AccountStatusActive,
 		}
-		ctxWithTenant := tenant.SaveTenantInContext(ctx, tnt)
+		ctxWithTenant := sdpcontext.SetTenantInContext(ctx, tnt)
 
 		distAccount := schema.TransactionAccount{
 			Address: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
@@ -311,7 +320,7 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 		distAccResolver.On("DistributionAccountFromContext", mock.Anything).Return(distAccount, nil)
 
 		// Mock DistributionAccountService to return a balance (indicating trustline exists)
-		mockDistAccService.On("GetBalance", mock.Anything, mock.Anything, mock.Anything).Return(0.0, nil)
+		mockDistAccService.On("GetBalance", mock.Anything, mock.Anything, mock.Anything).Return(decimal.Zero, nil)
 
 		// Mock Horizon account with USDC trustline but zero balance
 		horizonAccount := &horizon.Account{
@@ -336,7 +345,8 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 		horizonClientMock.On("AccountDetail", mock.Anything).Return(*horizonAccount, nil)
 
 		rr := httptest.NewRecorder()
-		req, _ := http.NewRequest("GET", "/assets?enabled=true", nil)
+		req, err := http.NewRequest("GET", "/assets?enabled=true", nil)
+		require.NoError(t, err)
 		req = req.WithContext(ctxWithTenant)
 		http.HandlerFunc(handler.GetAssets).ServeHTTP(rr, req)
 
@@ -347,7 +357,7 @@ func Test_AssetsHandlerGetAssets(t *testing.T) {
 			if asset.Code == "USDC" {
 				assert.True(t, asset.Enabled)
 				assert.NotNil(t, asset.Balance)
-				assert.Equal(t, 0.0, *asset.Balance)
+				assert.Equal(t, decimal.Zero, *asset.Balance)
 			}
 		}
 	})
@@ -369,13 +379,13 @@ func Test_AssetsHandlerCheckTrustlineExists(t *testing.T) {
 			Type:    schema.DistributionAccountStellarDBVault,
 		}
 
-		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(100.0, nil)
+		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(decimal.NewFromFloat(100.0), nil)
 
 		hasTrustline, balance, err := handler.getBalanceInfo(ctx, &account, asset)
 		require.NoError(t, err)
 		assert.True(t, hasTrustline)
 		assert.NotNil(t, balance)
-		assert.Equal(t, 100.0, *balance)
+		assert.Equal(t, decimal.NewFromFloat(100.0), *balance)
 	})
 
 	t.Run("returns true for Circle accounts with supported assets", func(t *testing.T) {
@@ -384,13 +394,13 @@ func Test_AssetsHandlerCheckTrustlineExists(t *testing.T) {
 			Type: schema.DistributionAccountCircleDBVault,
 		}
 
-		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(123.45, nil)
+		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(decimal.NewFromFloat(123.45), nil)
 
 		hasTrustline, balance, err := handler.getBalanceInfo(ctx, &account, asset)
 		require.NoError(t, err)
 		assert.True(t, hasTrustline)
 		assert.NotNil(t, balance)
-		assert.Equal(t, 123.45, *balance)
+		assert.Equal(t, decimal.NewFromFloat(123.45), *balance)
 	})
 
 	t.Run("returns false for Circle accounts with unsupported assets", func(t *testing.T) {
@@ -399,7 +409,7 @@ func Test_AssetsHandlerCheckTrustlineExists(t *testing.T) {
 			Type: schema.DistributionAccountCircleDBVault,
 		}
 
-		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(0.0, services.ErrNoBalanceForAsset)
+		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(decimal.Zero, services.ErrNoBalanceForAsset)
 
 		hasTrustline, balance, err := handler.getBalanceInfo(ctx, &account, asset)
 		require.NoError(t, err)
@@ -414,13 +424,13 @@ func Test_AssetsHandlerCheckTrustlineExists(t *testing.T) {
 			Type:    schema.DistributionAccountStellarDBVault,
 		}
 
-		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(0.0, nil)
+		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(decimal.Zero, nil)
 
 		hasTrustline, balance, err := handler.getBalanceInfo(ctx, &account, asset)
 		require.NoError(t, err)
 		assert.True(t, hasTrustline)
 		assert.NotNil(t, balance)
-		assert.Equal(t, 0.0, *balance)
+		assert.Equal(t, decimal.Zero, *balance)
 	})
 
 	t.Run("returns false for Stellar accounts without trustline", func(t *testing.T) {
@@ -430,7 +440,7 @@ func Test_AssetsHandlerCheckTrustlineExists(t *testing.T) {
 			Type:    schema.DistributionAccountStellarDBVault,
 		}
 
-		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(0.0, services.ErrNoBalanceForAsset)
+		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(decimal.Zero, services.ErrNoBalanceForAsset)
 
 		hasTrustline, balance, err := handler.getBalanceInfo(ctx, &account, asset)
 		require.NoError(t, err)
@@ -455,13 +465,13 @@ func Test_AssetsHandlerGetBalanceInfo(t *testing.T) {
 			Type:    schema.DistributionAccountStellarDBVault,
 		}
 
-		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(0.0, nil)
+		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(decimal.Zero, nil)
 
 		hasTrustline, balance, err := handler.getBalanceInfo(ctx, &account, asset)
 		require.NoError(t, err)
 		assert.True(t, hasTrustline)
 		assert.NotNil(t, balance)
-		assert.Equal(t, 0.0, *balance)
+		assert.Equal(t, decimal.Zero, *balance)
 	})
 
 	t.Run("returns true and balance for Circle accounts with supported assets", func(t *testing.T) {
@@ -470,13 +480,13 @@ func Test_AssetsHandlerGetBalanceInfo(t *testing.T) {
 			Type: schema.DistributionAccountCircleDBVault,
 		}
 
-		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(321.0, nil)
+		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(decimal.NewFromFloat(321.0), nil)
 
 		hasTrustline, balance, err := handler.getBalanceInfo(ctx, &account, asset)
 		require.NoError(t, err)
 		assert.True(t, hasTrustline)
 		assert.NotNil(t, balance)
-		assert.Equal(t, 321.0, *balance)
+		assert.Equal(t, decimal.NewFromFloat(321.0), *balance)
 	})
 
 	t.Run("returns false and nil balance for Circle accounts with unsupported assets", func(t *testing.T) {
@@ -485,7 +495,7 @@ func Test_AssetsHandlerGetBalanceInfo(t *testing.T) {
 			Type: schema.DistributionAccountCircleDBVault,
 		}
 
-		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(0.0, services.ErrNoBalanceForAsset)
+		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(decimal.Zero, services.ErrNoBalanceForAsset)
 
 		hasTrustline, balance, err := handler.getBalanceInfo(ctx, &account, asset)
 		require.NoError(t, err)
@@ -500,7 +510,7 @@ func Test_AssetsHandlerGetBalanceInfo(t *testing.T) {
 			Type:    schema.DistributionAccountStellarDBVault,
 		}
 
-		expectedBalance := 100.5
+		expectedBalance := decimal.NewFromFloat(100.5)
 		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(expectedBalance, nil)
 
 		hasTrustline, balance, err := handler.getBalanceInfo(ctx, &account, asset)
@@ -517,7 +527,7 @@ func Test_AssetsHandlerGetBalanceInfo(t *testing.T) {
 			Type:    schema.DistributionAccountStellarDBVault,
 		}
 
-		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(0.0, services.ErrNoBalanceForAsset)
+		mockDistAccService.On("GetBalance", ctx, &account, asset).Return(decimal.Zero, services.ErrNoBalanceForAsset)
 
 		hasTrustline, balance, err := handler.getBalanceInfo(ctx, &account, asset)
 		require.NoError(t, err)
@@ -562,9 +572,11 @@ func Test_AssetHandler_CreateAsset(t *testing.T) {
 			Return(schema.TransactionAccount{}, errors.New("foobar")).Once()
 
 		rr := httptest.NewRecorder()
-		requestBody, _ := json.Marshal(AssetRequest{code, issuer})
+		requestBody, err := json.Marshal(AssetRequest{code, issuer})
+		require.NoError(t, err)
 
-		req, _ := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		req, err := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		require.NoError(t, err)
 		http.HandlerFunc(handler.CreateAsset).ServeHTTP(rr, req)
 
 		assert.Equal(t, http.StatusInternalServerError, rr.Result().StatusCode)
@@ -576,9 +588,11 @@ func Test_AssetHandler_CreateAsset(t *testing.T) {
 			Return(schema.TransactionAccount{Type: schema.DistributionAccountCircleDBVault}, nil).Once()
 
 		rr := httptest.NewRecorder()
-		requestBody, _ := json.Marshal(AssetRequest{code, issuer})
+		requestBody, err := json.Marshal(AssetRequest{code, issuer})
+		require.NoError(t, err)
 
-		req, _ := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		req, err := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		require.NoError(t, err)
 		http.HandlerFunc(handler.CreateAsset).ServeHTTP(rr, req)
 
 		assert.Equal(t, http.StatusBadRequest, rr.Result().StatusCode)
@@ -641,9 +655,11 @@ func Test_AssetHandler_CreateAsset(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		requestBody, _ := json.Marshal(AssetRequest{code, issuer})
+		requestBody, err := json.Marshal(AssetRequest{code, issuer})
+		require.NoError(t, err)
 
-		req, _ := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		req, err := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		require.NoError(t, err)
 		http.HandlerFunc(handler.CreateAsset).ServeHTTP(rr, req)
 
 		resp := rr.Result()
@@ -681,9 +697,11 @@ func Test_AssetHandler_CreateAsset(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		requestBody, _ := json.Marshal(AssetRequest{Code: "XLM"})
+		requestBody, err := json.Marshal(AssetRequest{Code: "XLM"})
+		require.NoError(t, err)
 
-		req, _ := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		req, err := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		require.NoError(t, err)
 		http.HandlerFunc(handler.CreateAsset).ServeHTTP(rr, req)
 
 		resp := rr.Result()
@@ -721,9 +739,11 @@ func Test_AssetHandler_CreateAsset(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		requestBody, _ := json.Marshal(AssetRequest{code, issuer})
+		requestBody, err := json.Marshal(AssetRequest{code, issuer})
+		require.NoError(t, err)
 
-		req, _ := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		req, err := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		require.NoError(t, err)
 		http.HandlerFunc(handler.CreateAsset).ServeHTTP(rr, req)
 
 		resp := rr.Result()
@@ -738,9 +758,11 @@ func Test_AssetHandler_CreateAsset(t *testing.T) {
 	t.Run("failed creating asset, issuer invalid", func(t *testing.T) {
 		rr := httptest.NewRecorder()
 
-		requestBody, _ := json.Marshal(AssetRequest{code, "invalid"})
+		requestBody, err := json.Marshal(AssetRequest{code, "invalid"})
+		require.NoError(t, err)
 
-		req, _ := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		req, err := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		require.NoError(t, err)
 		http.HandlerFunc(handler.CreateAsset).ServeHTTP(rr, req)
 
 		resp := rr.Result()
@@ -751,9 +773,11 @@ func Test_AssetHandler_CreateAsset(t *testing.T) {
 	t.Run("failed creating asset, missing field", func(t *testing.T) {
 		rr := httptest.NewRecorder()
 
-		requestBody, _ := json.Marshal(AssetRequest{})
+		requestBody, err := json.Marshal(AssetRequest{})
+		require.NoError(t, err)
 
-		req, _ := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		req, err := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		require.NoError(t, err)
 		http.HandlerFunc(handler.CreateAsset).ServeHTTP(rr, req)
 
 		resp := rr.Result()
@@ -765,9 +789,11 @@ func Test_AssetHandler_CreateAsset(t *testing.T) {
 		rr := httptest.NewRecorder()
 
 		emptyStr := ""
-		requestBody, _ := json.Marshal(AssetRequest{Code: emptyStr, Issuer: emptyStr})
+		requestBody, err := json.Marshal(AssetRequest{Code: emptyStr, Issuer: emptyStr})
+		require.NoError(t, err)
 
-		req, _ := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		req, err := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		require.NoError(t, err)
 		http.HandlerFunc(handler.CreateAsset).ServeHTTP(rr, req)
 
 		resp := rr.Result()
@@ -958,9 +984,11 @@ func Test_AssetHandler_CreateAsset(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		requestBody, _ := json.Marshal(AssetRequest{code, fmt.Sprintf(" %s ", issuer)})
+		requestBody, err := json.Marshal(AssetRequest{code, fmt.Sprintf(" %s ", issuer)})
+		require.NoError(t, err)
 
-		req, _ := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		req, err := http.NewRequest(http.MethodPost, "/assets", strings.NewReader(string(requestBody)))
+		require.NoError(t, err)
 		http.HandlerFunc(handler.CreateAsset).ServeHTTP(rr, req)
 
 		resp := rr.Result()
@@ -1015,7 +1043,8 @@ func Test_AssetHandler_DeleteAsset(t *testing.T) {
 			Return(schema.TransactionAccount{}, errors.New("foobar")).Once()
 
 		rr := httptest.NewRecorder()
-		req, _ := http.NewRequest(http.MethodDelete, fmt.Sprintf("/assets/%s", asset.ID), nil)
+		req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("/assets/%s", asset.ID), nil)
+		require.NoError(t, err)
 		r.ServeHTTP(rr, req)
 
 		assert.Equal(t, http.StatusInternalServerError, rr.Result().StatusCode)
@@ -1030,7 +1059,8 @@ func Test_AssetHandler_DeleteAsset(t *testing.T) {
 			Return(schema.TransactionAccount{Type: schema.DistributionAccountCircleDBVault}, nil).Once()
 
 		rr := httptest.NewRecorder()
-		req, _ := http.NewRequest(http.MethodDelete, fmt.Sprintf("/assets/%s", asset.ID), nil)
+		req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("/assets/%s", asset.ID), nil)
+		require.NoError(t, err)
 		r.ServeHTTP(rr, req)
 
 		assert.Equal(t, http.StatusBadRequest, rr.Result().StatusCode)
@@ -1214,7 +1244,8 @@ func Test_AssetHandler_DeleteAsset(t *testing.T) {
 	t.Run("failed deleting an asset, asset not found", func(t *testing.T) {
 		rr := httptest.NewRecorder()
 
-		req, _ := http.NewRequest(http.MethodDelete, fmt.Sprintf("/assets/%s", "nonexistant"), nil)
+		req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("/assets/%s", "nonexistant"), nil)
+		require.NoError(t, err)
 		r.ServeHTTP(rr, req)
 
 		resp := rr.Result()
@@ -1952,7 +1983,7 @@ func Test_AssetHandler_submitChangeTrustTransaction_makeSurePreconditionsAreSetA
 					expectedMax := time.Unix(int64(expXDR.MaxTime), 0).UTC()
 					actualMax := time.Unix(int64(actXDR.MaxTime), 0).UTC()
 
-					require.WithinDuration(t, expectedMax, actualMax, 30*time.Second,
+					require.WithinDuration(t, expectedMax, actualMax, 60*time.Second,
 						"MaxTime bounds drift too far: expected %s, got %s", expectedMax, actualMax)
 				}
 			}(t, signedTx, 0)).

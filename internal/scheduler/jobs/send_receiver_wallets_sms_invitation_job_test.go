@@ -17,9 +17,10 @@ import (
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/crashtracker"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/message"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/services"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/utils"
-	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
+	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
 )
 
 func Test_NewSendReceiverWalletsSMSInvitationJob(t *testing.T) {
@@ -97,12 +98,12 @@ func Test_SendReceiverWalletsSMSInvitationJob_Execute(t *testing.T) {
 	require.NoError(t, err)
 
 	tenantBaseURL := "http://localhost:8000"
-	tenantInfo := &tenant.Tenant{
+	tenantInfo := &schema.Tenant{
 		ID:      uuid.NewString(),
 		Name:    "TestTenant",
 		BaseURL: &tenantBaseURL,
 	}
-	ctx := tenant.SaveTenantInContext(context.Background(), tenantInfo)
+	ctx := sdpcontext.SetTenantInContext(context.Background(), tenantInfo)
 
 	stellarSecretKey := "SBUSPEKAZKLZSWHRSJ2HWDZUK6I3IVDUWA7JJZSGBLZ2WZIUJI7FPNB5"
 	var maxInvitationSMSResendAttempts int64 = 3
@@ -188,18 +189,28 @@ func Test_SendReceiverWalletsSMSInvitationJob_Execute(t *testing.T) {
 	mockErr := errors.New("unexpected error")
 	messageDispatcherMock.
 		On("SendMessage", mock.Anything, message.Message{
+			Type:          message.MessageTypeReceiverInvitation,
 			ToPhoneNumber: receiver1.PhoneNumber,
 			ToEmail:       receiver1.Email,
 			Body:          contentWallet1,
 			Title:         titleWallet1,
+			TemplateVariables: map[message.TemplateVariable]string{
+				message.TemplateVarOrgName:                  walletDeepLink1.OrganizationName,
+				message.TemplateVarReceiverRegistrationLink: deepLink1,
+			},
 		}, []message.MessageChannel{message.MessageChannelSMS, message.MessageChannelEmail}).
 		Return(message.MessengerTypeTwilioSMS, mockErr).
 		Once().
 		On("SendMessage", mock.Anything, message.Message{
+			Type:          message.MessageTypeReceiverInvitation,
 			ToPhoneNumber: receiver2.PhoneNumber,
 			ToEmail:       receiver2.Email,
 			Body:          contentWallet2,
 			Title:         titleWallet2,
+			TemplateVariables: map[message.TemplateVariable]string{
+				message.TemplateVarOrgName:                  walletDeepLink2.OrganizationName,
+				message.TemplateVarReceiverRegistrationLink: deepLink2,
+			},
 		}, []message.MessageChannel{message.MessageChannelSMS, message.MessageChannelEmail}).
 		Return(message.MessengerTypeTwilioSMS, nil).
 		Once()

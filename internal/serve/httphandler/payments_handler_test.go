@@ -15,20 +15,17 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stellar/go/clients/horizonclient"
 	"github.com/stellar/go/protocols/horizon"
 	"github.com/stellar/go/protocols/horizon/base"
-	"github.com/stellar/go/support/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/crashtracker"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/events"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/events/schemas"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httpresponse"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/middleware"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/services"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/services/mocks"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/testutils"
@@ -37,7 +34,6 @@ import (
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/utils"
 	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
 	"github.com/stellar/stellar-disbursement-platform-backend/stellar-auth/pkg/auth"
-	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
 )
 
 func Test_PaymentsHandlerGet(t *testing.T) {
@@ -110,7 +106,7 @@ func Test_PaymentsHandlerGet(t *testing.T) {
 		// assert response
 		assert.Equal(t, http.StatusOK, rr.Code)
 
-		wantJson := `{
+		wantJSON := `{
 			"id": "` + payment.ID + `",
 			"amount": "50.0000000",
 			"stellar_transaction_id": "` + payment.StellarTransactionID + `",
@@ -176,7 +172,7 @@ func Test_PaymentsHandlerGet(t *testing.T) {
 			"external_payment_id": "` + payment.ExternalPaymentID + `"
 		}`
 
-		assert.JSONEq(t, wantJson, rr.Body.String())
+		assert.JSONEq(t, wantJSON, rr.Body.String())
 	})
 
 	t.Run("error payment not found for given ID", func(t *testing.T) {
@@ -189,10 +185,10 @@ func Test_PaymentsHandlerGet(t *testing.T) {
 		// assert response
 		assert.Equal(t, http.StatusNotFound, rr.Code)
 
-		wantJson := `{
+		wantJSON := `{
 			"error": "Cannot retrieve payment with ID: invalid_id"
 		}`
-		assert.JSONEq(t, wantJson, rr.Body.String())
+		assert.JSONEq(t, wantJSON, rr.Body.String())
 	})
 }
 
@@ -267,7 +263,7 @@ func Test_PaymentHandler_GetPayments_CirclePayments(t *testing.T) {
 				t.Helper()
 
 				assert.Equal(t, http.StatusInternalServerError, responseStatus)
-				assert.JSONEq(t, `{"error":"Cannot retrieve payments"}`, string(response))
+				assert.JSONEq(t, `{"error":"Cannot retrieve payments"}`, response)
 			},
 		},
 		{
@@ -876,9 +872,9 @@ func Test_PaymentHandler_GetPayments_Success(t *testing.T) {
 			assert.Equal(t, tc.expectedPagination, actualResponse.Pagination)
 
 			// Parse the response data
-			expectedJson, err := json.Marshal(tc.expectedPayments)
+			expectedJSON, err := json.Marshal(tc.expectedPayments)
 			require.NoError(t, err)
-			assert.JSONEq(t, string(expectedJson), string(actualResponse.Data))
+			assert.JSONEq(t, string(expectedJSON), string(actualResponse.Data))
 		})
 	}
 }
@@ -889,9 +885,9 @@ func Test_PaymentHandler_RetryPayments(t *testing.T) {
 	models, err := data.NewModels(dbConnectionPool)
 	require.NoError(t, err)
 
-	tnt := tenant.Tenant{ID: "tenant-id"}
+	tnt := schema.Tenant{ID: "tenant-id"}
 
-	ctx := tenant.SaveTenantInContext(context.Background(), &tnt)
+	ctx := sdpcontext.SetTenantInContext(context.Background(), &tnt)
 
 	wallet := data.CreateWalletFixture(t, ctx, dbConnectionPool, "Wallet", "https://www.wallet.com", "www.wallet.com", "wallet://")
 	asset := data.CreateAssetFixture(t, ctx, dbConnectionPool, "USDC", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVV")
@@ -930,7 +926,7 @@ func Test_PaymentHandler_RetryPayments(t *testing.T) {
 	})
 
 	t.Run("returns InternalServerError when fails getting user from token", func(t *testing.T) {
-		ctx = context.WithValue(ctx, middleware.TokenContextKey, "mytoken")
+		ctx = sdpcontext.SetTokenInContext(ctx, "mytoken")
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, "/retry", strings.NewReader("{}"))
 		require.NoError(t, err)
@@ -961,7 +957,7 @@ func Test_PaymentHandler_RetryPayments(t *testing.T) {
 	})
 
 	t.Run("returns BadRequest when fails decoding body request", func(t *testing.T) {
-		ctx = context.WithValue(ctx, middleware.TokenContextKey, "mytoken")
+		ctx = sdpcontext.SetTokenInContext(ctx, "mytoken")
 
 		payload := strings.NewReader("invalid")
 		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, "/retry", payload)
@@ -993,7 +989,7 @@ func Test_PaymentHandler_RetryPayments(t *testing.T) {
 	})
 
 	t.Run("returns BadRequest when fails when payload is invalid", func(t *testing.T) {
-		ctx = context.WithValue(ctx, middleware.TokenContextKey, "mytoken")
+		ctx = sdpcontext.SetTokenInContext(ctx, "mytoken")
 
 		payload := strings.NewReader("{}")
 		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, "/retry", payload)
@@ -1067,7 +1063,7 @@ func Test_PaymentHandler_RetryPayments(t *testing.T) {
 			Asset:                *asset,
 		})
 
-		ctx = context.WithValue(ctx, middleware.TokenContextKey, "mytoken")
+		ctx = sdpcontext.SetTokenInContext(ctx, "mytoken")
 
 		payload := strings.NewReader(fmt.Sprintf(`
 			{
@@ -1157,7 +1153,7 @@ func Test_PaymentHandler_RetryPayments(t *testing.T) {
 			Asset:                *asset,
 		})
 
-		ctx = context.WithValue(ctx, middleware.TokenContextKey, "mytoken")
+		ctx = sdpcontext.SetTokenInContext(ctx, "mytoken")
 
 		payload := strings.NewReader(fmt.Sprintf(`
 			{
@@ -1173,35 +1169,16 @@ func Test_PaymentHandler_RetryPayments(t *testing.T) {
 			On("GetUser", ctx, "mytoken").
 			Return(&auth.User{Email: "email@test.com"}, nil).
 			Once()
-		eventProducerMock := events.NewMockProducer(t)
-		eventProducerMock.
-			On("WriteMessages", ctx, []events.Message{
-				{
-					Topic:    events.PaymentReadyToPayTopic,
-					Key:      tnt.ID,
-					TenantID: tnt.ID,
-					Type:     events.PaymentReadyToPayRetryFailedPayment,
-					Data: schemas.EventPaymentsReadyToPayData{
-						TenantID: tnt.ID,
-						Payments: []schemas.PaymentReadyToPay{
-							{ID: payment1.ID},
-							{ID: payment2.ID},
-						},
-					},
-				},
-			}).
-			Return(nil).
-			Once()
+
 		distAccountResolverMock := sigMocks.NewMockDistributionAccountResolver(t)
-		distAccountResolverMock.
-			On("DistributionAccountFromContext", mock.Anything).
-			Return(schema.TransactionAccount{Type: schema.DistributionAccountStellarEnv}, nil).
-			Once()
+		// distAccountResolverMock.
+		//	On("DistributionAccountFromContext", mock.Anything).
+		//	Return(schema.TransactionAccount{Type: schema.DistributionAccountStellarEnv}, nil).
+		//	Once()
 		handler := PaymentsHandler{
 			Models:                      models,
 			DBConnectionPool:            dbConnectionPool,
 			AuthManager:                 authManagerMock,
-			EventProducer:               eventProducerMock,
 			DistributionAccountResolver: distAccountResolverMock,
 		}
 
@@ -1262,9 +1239,9 @@ func Test_PaymentHandler_RetryPayments(t *testing.T) {
 			LastSyncAttemptAt: time.Now(),
 		})
 
-		circleTnt := tenant.Tenant{ID: "tenant-id", DistributionAccountType: schema.DistributionAccountCircleDBVault}
-		circleCtx := tenant.SaveTenantInContext(context.Background(), &circleTnt)
-		circleCtx = context.WithValue(circleCtx, middleware.TokenContextKey, "mytoken")
+		circleTnt := schema.Tenant{ID: "tenant-id", DistributionAccountType: schema.DistributionAccountCircleDBVault}
+		circleCtx := sdpcontext.SetTenantInContext(context.Background(), &circleTnt)
+		circleCtx = sdpcontext.SetTokenInContext(circleCtx, "mytoken")
 
 		payload := strings.NewReader(fmt.Sprintf(`{ "payment_ids": [%q] } `, failedPayment.ID))
 		req, err := http.NewRequestWithContext(circleCtx, http.MethodPatch, "/retry", payload)
@@ -1276,35 +1253,12 @@ func Test_PaymentHandler_RetryPayments(t *testing.T) {
 			On("GetUser", circleCtx, "mytoken").
 			Return(&auth.User{Email: "email@test.com"}, nil).
 			Once()
-		eventProducerMock := events.NewMockProducer(t)
-		eventProducerMock.
-			On("WriteMessages", circleCtx, []events.Message{
-				{
-					Topic:    events.CirclePaymentReadyToPayTopic,
-					Key:      tnt.ID,
-					TenantID: tnt.ID,
-					Type:     events.PaymentReadyToPayRetryFailedPayment,
-					Data: schemas.EventPaymentsReadyToPayData{
-						TenantID: tnt.ID,
-						Payments: []schemas.PaymentReadyToPay{
-							{ID: failedPayment.ID},
-						},
-					},
-				},
-			}).
-			Return(nil).
-			Once()
-		distAccountResolverMock := sigMocks.NewMockDistributionAccountResolver(t)
-		distAccountResolverMock.
-			On("DistributionAccountFromContext", mock.Anything).
-			Return(schema.TransactionAccount{Type: schema.DistributionAccountCircleDBVault}, nil).
-			Once()
+
 		handler := PaymentsHandler{
 			Models:                      models,
 			DBConnectionPool:            dbConnectionPool,
 			AuthManager:                 authManagerMock,
-			EventProducer:               eventProducerMock,
-			DistributionAccountResolver: distAccountResolverMock,
+			DistributionAccountResolver: sigMocks.NewMockDistributionAccountResolver(t),
 		}
 
 		rw := httptest.NewRecorder()
@@ -1355,7 +1309,7 @@ func Test_PaymentHandler_RetryPayments(t *testing.T) {
 			Asset:                *asset,
 		})
 
-		ctxWithoutTenant := context.WithValue(context.Background(), middleware.TokenContextKey, "mytoken")
+		ctxWithoutTenant := sdpcontext.SetTokenInContext(context.Background(), "mytoken")
 
 		payload := strings.NewReader(fmt.Sprintf(`
 			{
@@ -1388,169 +1342,6 @@ func Test_PaymentHandler_RetryPayments(t *testing.T) {
 
 		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 		assert.JSONEq(t, `{"error": "An internal error occurred while processing this request."}`, string(respBody))
-	})
-
-	t.Run("logs to crashTracker when EventProducer fails to write a message", func(t *testing.T) {
-		data.DeleteAllPaymentsFixtures(t, ctx, dbConnectionPool)
-
-		payment1 := data.CreatePaymentFixture(t, ctx, dbConnectionPool, models.Payment, &data.Payment{
-			Amount:               "1",
-			StellarTransactionID: "stellar-transaction-id-1",
-			StellarOperationID:   "operation-id-1",
-			Status:               data.FailedPaymentStatus,
-			Disbursement:         disbursement,
-			ReceiverWallet:       receiverWallet,
-			Asset:                *asset,
-		})
-
-		ctx = context.WithValue(ctx, middleware.TokenContextKey, "mytoken")
-
-		payload := strings.NewReader(fmt.Sprintf(`
-			{
-				"payment_ids": [%q]
-			}
-		`, payment1.ID))
-		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, "/retry", payload)
-		require.NoError(t, err)
-
-		// Prepare the handler and its mocks
-		authManagerMock := auth.NewAuthManagerMock(t)
-		authManagerMock.
-			On("GetUser", ctx, "mytoken").
-			Return(&auth.User{Email: "email@test.com"}, nil).
-			Once()
-		eventProducerMock := events.NewMockProducer(t)
-		eventProducerMock.
-			On("WriteMessages", ctx, []events.Message{
-				{
-					Topic:    events.PaymentReadyToPayTopic,
-					Key:      tnt.ID,
-					TenantID: tnt.ID,
-					Type:     events.PaymentReadyToPayRetryFailedPayment,
-					Data: schemas.EventPaymentsReadyToPayData{
-						TenantID: tnt.ID,
-						Payments: []schemas.PaymentReadyToPay{
-							{ID: payment1.ID},
-						},
-					},
-				},
-			}).
-			Return(errors.New("unexpected error")).
-			Once()
-		crashTrackerMock := &crashtracker.MockCrashTrackerClient{}
-		crashTrackerMock.
-			On("LogAndReportErrors", mock.Anything, mock.Anything, "writing retry payment message on the event producer").
-			Once()
-		distAccountResolverMock := sigMocks.NewMockDistributionAccountResolver(t)
-		distAccountResolverMock.
-			On("DistributionAccountFromContext", mock.Anything).
-			Return(schema.TransactionAccount{Type: schema.DistributionAccountStellarEnv}, nil).
-			Once()
-		handler := PaymentsHandler{
-			Models:                      models,
-			DBConnectionPool:            dbConnectionPool,
-			AuthManager:                 authManagerMock,
-			EventProducer:               eventProducerMock,
-			CrashTrackerClient:          crashTrackerMock,
-			DistributionAccountResolver: distAccountResolverMock,
-		}
-
-		rw := httptest.NewRecorder()
-		http.HandlerFunc(handler.RetryPayments).ServeHTTP(rw, req)
-
-		resp := rw.Result()
-		defer resp.Body.Close()
-
-		respBody, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.JSONEq(t, `{"message":"Payments retried successfully"}`, string(respBody))
-	})
-
-	t.Run("logs when couldn't write message because EventProducer is nil", func(t *testing.T) {
-		data.DeleteAllPaymentsFixtures(t, ctx, dbConnectionPool)
-
-		payment1 := data.CreatePaymentFixture(t, ctx, dbConnectionPool, models.Payment, &data.Payment{
-			Amount:               "1",
-			StellarTransactionID: "stellar-transaction-id-1",
-			StellarOperationID:   "operation-id-1",
-			Status:               data.FailedPaymentStatus,
-			Disbursement:         disbursement,
-			ReceiverWallet:       receiverWallet,
-			Asset:                *asset,
-		})
-
-		payment2 := data.CreatePaymentFixture(t, ctx, dbConnectionPool, models.Payment, &data.Payment{
-			Amount:               "1",
-			StellarTransactionID: "stellar-transaction-id-2",
-			StellarOperationID:   "operation-id-2",
-			Status:               data.FailedPaymentStatus,
-			Disbursement:         disbursement,
-			ReceiverWallet:       receiverWallet,
-			Asset:                *asset,
-		})
-
-		ctx = context.WithValue(ctx, middleware.TokenContextKey, "mytoken")
-
-		payload := strings.NewReader(fmt.Sprintf(`
-			{
-				"payment_ids": [%q, %q]
-			}
-		`, payment1.ID, payment2.ID))
-		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, "/retry", payload)
-		require.NoError(t, err)
-
-		// Prepare the handler and its mocks
-		authManagerMock := auth.NewAuthManagerMock(t)
-		authManagerMock.
-			On("GetUser", ctx, "mytoken").
-			Return(&auth.User{Email: "email@test.com"}, nil).
-			Once()
-		distAccountResolverMock := sigMocks.NewMockDistributionAccountResolver(t)
-		distAccountResolverMock.
-			On("DistributionAccountFromContext", mock.Anything).
-			Return(schema.TransactionAccount{Type: schema.DistributionAccountStellarEnv}, nil).
-			Once()
-		handler := PaymentsHandler{
-			Models:                      models,
-			DBConnectionPool:            dbConnectionPool,
-			AuthManager:                 authManagerMock,
-			DistributionAccountResolver: distAccountResolverMock,
-		}
-
-		getEntries := log.DefaultLogger.StartTest(log.DebugLevel)
-
-		handler.EventProducer = nil
-		rw := httptest.NewRecorder()
-		http.HandlerFunc(handler.RetryPayments).ServeHTTP(rw, req)
-
-		resp := rw.Result()
-		defer resp.Body.Close()
-
-		respBody, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.JSONEq(t, `{"message":"Payments retried successfully"}`, string(respBody))
-
-		msg := events.Message{
-			Topic:    events.PaymentReadyToPayTopic,
-			Key:      tnt.ID,
-			TenantID: tnt.ID,
-			Type:     events.PaymentReadyToPayRetryFailedPayment,
-			Data: schemas.EventPaymentsReadyToPayData{
-				TenantID: tnt.ID,
-				Payments: []schemas.PaymentReadyToPay{
-					{ID: payment1.ID},
-					{ID: payment2.ID},
-				},
-			},
-		}
-
-		entries := getEntries()
-		require.Len(t, entries, 1)
-		assert.Contains(t, fmt.Sprintf("event producer is nil, could not publish messages %+v", []events.Message{msg}), entries[0].Message)
 	})
 }
 
@@ -1792,8 +1583,8 @@ func Test_PaymentsHandler_PatchPaymentStatus(t *testing.T) {
 }
 
 func Test_PaymentsHandler_PostPayment(t *testing.T) {
-	ctx := context.WithValue(context.Background(), middleware.UserIDContextKey, "user-id")
-	ctx = tenant.SaveTenantInContext(ctx, &tenant.Tenant{ID: "battle-barge-001"})
+	ctx := sdpcontext.SetUserIDInContext(context.Background(), "user-id")
+	ctx = sdpcontext.SetTenantInContext(ctx, &schema.Tenant{ID: "battle-barge-001"})
 
 	dbConnectionPool := testutils.GetDBConnectionPool(t)
 	models, err := data.NewModels(dbConnectionPool)
@@ -1828,7 +1619,6 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 		authMock := &auth.AuthManagerMock{}
 		distResolverMock := sigMocks.NewMockDistributionAccountResolver(t)
 		distServiceMock := &mocks.MockDistributionAccountService{}
-		eventProducerMock := events.NewMockProducer(t)
 		horizonClientMock := &horizonclient.MockClient{}
 
 		distributionAccPubKey := "GAAHIL6ZW4QFNLCKALZ3YOIWPP4TXQ7B7J5IU7RLNVGQAV6GFDZHLDTA"
@@ -1860,20 +1650,10 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 			},
 		}, nil).Once()
 
-		distServiceMock.On("GetBalance", mock.Anything, &stellarDistAccount, *asset).Return(float64(1000), nil)
-
-		eventProducerMock.On("WriteMessages", mock.Anything, mock.MatchedBy(func(msgs []events.Message) bool {
-			if len(msgs) != 1 {
-				return false
-			}
-			msg := msgs[0]
-			return msg.Topic == events.PaymentReadyToPayTopic &&
-				msg.Type == events.PaymentReadyToPayDirectPayment
-		})).Return(nil)
+		distServiceMock.On("GetBalance", mock.Anything, &stellarDistAccount, *asset).Return(decimal.NewFromFloat(1000), nil)
 
 		directPaymentService := services.NewDirectPaymentService(
 			models,
-			eventProducerMock,
 			distServiceMock,
 			engine.SubmitterEngine{HorizonClient: horizonClientMock},
 		)
@@ -1907,7 +1687,6 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 		authMock.AssertExpectations(t)
 		distResolverMock.AssertExpectations(t)
 		distServiceMock.AssertExpectations(t)
-		eventProducerMock.AssertExpectations(t)
 		horizonClientMock.AssertExpectations(t)
 	})
 
@@ -1932,7 +1711,6 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 		authMock := &auth.AuthManagerMock{}
 		distResolverMock := sigMocks.NewMockDistributionAccountResolver(t)
 		distServiceMock := &mocks.MockDistributionAccountService{}
-		eventProducerMock := events.NewMockProducer(t)
 
 		authMock.On("GetUserByID", mock.Anything, "user-id").Return(&auth.User{
 			ID: "user-test",
@@ -1941,7 +1719,7 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 		distResolverMock.On("DistributionAccountFromContext", mock.Anything).Return(
 			schema.TransactionAccount{}, errors.New("resolution failed"))
 
-		directPaymentService := services.NewDirectPaymentService(models, eventProducerMock, distServiceMock, engine.SubmitterEngine{})
+		directPaymentService := services.NewDirectPaymentService(models, distServiceMock, engine.SubmitterEngine{})
 
 		handler := &PaymentsHandler{
 			Models:                      models,
@@ -1982,7 +1760,6 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 		authMock := &auth.AuthManagerMock{}
 		distResolverMock := sigMocks.NewMockDistributionAccountResolver(t)
 		distServiceMock := &mocks.MockDistributionAccountService{}
-		eventProducerMock := events.NewMockProducer(t)
 
 		authMock.On("GetUserByID", mock.Anything, "user-id").Return(&auth.User{
 			ID: "user-test",
@@ -1991,7 +1768,7 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 		distResolverMock.On("DistributionAccountFromContext", mock.Anything).Return(
 			schema.TransactionAccount{Type: schema.DistributionAccountStellarDBVault}, nil)
 
-		directPaymentService := services.NewDirectPaymentService(models, eventProducerMock, distServiceMock, engine.SubmitterEngine{})
+		directPaymentService := services.NewDirectPaymentService(models, distServiceMock, engine.SubmitterEngine{})
 
 		handler := &PaymentsHandler{
 			Models:                      models,
@@ -2041,7 +1818,6 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 		authMock := &auth.AuthManagerMock{}
 		distResolverMock := sigMocks.NewMockDistributionAccountResolver(t)
 		distServiceMock := &mocks.MockDistributionAccountService{}
-		eventProducerMock := events.NewMockProducer(t)
 		horizonClientMock := &horizonclient.MockClient{}
 
 		distributionAccPubKey := "GAAHIL6ZW4QFNLCKALZ3YOIWPP4TXQ7B7J5IU7RLNVGQAV6GFDZHLDTA"
@@ -2073,11 +1849,10 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 			},
 		}, nil).Once()
 
-		distServiceMock.On("GetBalance", mock.Anything, &stellarDistAccount, *asset).Return(float64(100), nil)
+		distServiceMock.On("GetBalance", mock.Anything, &stellarDistAccount, *asset).Return(decimal.NewFromFloat(100), nil)
 
 		directPaymentService := services.NewDirectPaymentService(
 			models,
-			eventProducerMock,
 			distServiceMock,
 			engine.SubmitterEngine{HorizonClient: horizonClientMock},
 		)
@@ -2134,7 +1909,6 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 		authMock := &auth.AuthManagerMock{}
 		distResolverMock := sigMocks.NewMockDistributionAccountResolver(t)
 		distServiceMock := &mocks.MockDistributionAccountService{}
-		eventProducerMock := events.NewMockProducer(t)
 
 		authMock.On("GetUserByID", mock.Anything, "user-id").Return(&auth.User{
 			ID: "user-test",
@@ -2143,7 +1917,7 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 		distResolverMock.On("DistributionAccountFromContext", mock.Anything).Return(
 			schema.TransactionAccount{Type: schema.DistributionAccountStellarDBVault}, nil)
 
-		directPaymentService := services.NewDirectPaymentService(models, eventProducerMock, distServiceMock, engine.SubmitterEngine{})
+		directPaymentService := services.NewDirectPaymentService(models, distServiceMock, engine.SubmitterEngine{})
 
 		handler := &PaymentsHandler{
 			Models:                      models,
@@ -2198,7 +1972,6 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 		authMock := &auth.AuthManagerMock{}
 		distResolverMock := sigMocks.NewMockDistributionAccountResolver(t)
 		distServiceMock := &mocks.MockDistributionAccountService{}
-		eventProducerMock := events.NewMockProducer(t)
 		horizonClientMock := &horizonclient.MockClient{}
 
 		distributionAccPubKey := "GAAHIL6ZW4QFNLCKALZ3YOIWPP4TXQ7B7J5IU7RLNVGQAV6GFDZHLDTA"
@@ -2231,20 +2004,10 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 			},
 		}, nil).Once()
 
-		distServiceMock.On("GetBalance", mock.Anything, &stellarDistAccount, *asset).Return(float64(1000), nil)
-
-		eventProducerMock.On("WriteMessages", mock.Anything, mock.MatchedBy(func(msgs []events.Message) bool {
-			if len(msgs) != 1 {
-				return false
-			}
-			msg := msgs[0]
-			return msg.Topic == events.PaymentReadyToPayTopic &&
-				msg.Type == events.PaymentReadyToPayDirectPayment
-		})).Return(nil)
+		distServiceMock.On("GetBalance", mock.Anything, &stellarDistAccount, *asset).Return(decimal.NewFromFloat(1000), nil)
 
 		directPaymentService := services.NewDirectPaymentService(
 			models,
-			eventProducerMock,
 			distServiceMock,
 			engine.SubmitterEngine{HorizonClient: horizonClientMock},
 		)
@@ -2277,7 +2040,6 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 		authMock.AssertExpectations(t)
 		distResolverMock.AssertExpectations(t)
 		distServiceMock.AssertExpectations(t)
-		eventProducerMock.AssertExpectations(t)
 		horizonClientMock.AssertExpectations(t)
 	})
 
@@ -2302,7 +2064,6 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 		authMock := &auth.AuthManagerMock{}
 		distResolverMock := sigMocks.NewMockDistributionAccountResolver(t)
 		distServiceMock := &mocks.MockDistributionAccountService{}
-		eventProducerMock := events.NewMockProducer(t)
 
 		authMock.On("GetUserByID", mock.Anything, "user-id").Return(&auth.User{
 			ID: "user-test",
@@ -2311,7 +2072,7 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 		distResolverMock.On("DistributionAccountFromContext", mock.Anything).Return(
 			schema.TransactionAccount{Type: schema.DistributionAccountStellarDBVault}, nil)
 
-		directPaymentService := services.NewDirectPaymentService(models, eventProducerMock, distServiceMock, engine.SubmitterEngine{})
+		directPaymentService := services.NewDirectPaymentService(models, distServiceMock, engine.SubmitterEngine{})
 
 		handler := &PaymentsHandler{
 			Models:                      models,
@@ -2337,8 +2098,8 @@ func Test_PaymentsHandler_PostPayment(t *testing.T) {
 
 func TestPaymentsHandler_PostPayment_InputValidation(t *testing.T) {
 	dbConnectionPool := testutils.GetDBConnectionPool(t)
-	ctx := context.WithValue(context.Background(), middleware.UserIDContextKey, "user-horus")
-	ctx = tenant.SaveTenantInContext(ctx, &tenant.Tenant{ID: "battle-barge-001"})
+	ctx := sdpcontext.SetUserIDInContext(context.Background(), "user-horus")
+	ctx = sdpcontext.SetTenantInContext(ctx, &schema.Tenant{ID: "battle-barge-001"})
 
 	models, err := data.NewModels(dbConnectionPool)
 	require.NoError(t, err)
@@ -2356,7 +2117,6 @@ func TestPaymentsHandler_PostPayment_InputValidation(t *testing.T) {
 	authMock := &auth.AuthManagerMock{}
 	distResolverMock := sigMocks.NewMockDistributionAccountResolver(t)
 	distServiceMock := &mocks.MockDistributionAccountService{}
-	eventProducerMock := events.NewMockProducer(t)
 
 	authMock.On("GetUserByID", mock.Anything, "user-horus").Return(&auth.User{
 		ID: "user-horus", Email: "horus@warmaster.imperium",
@@ -2365,7 +2125,7 @@ func TestPaymentsHandler_PostPayment_InputValidation(t *testing.T) {
 	distResolverMock.On("DistributionAccountFromContext", mock.Anything).Return(
 		schema.TransactionAccount{}, nil)
 
-	directPaymentService := services.NewDirectPaymentService(models, eventProducerMock, distServiceMock, engine.SubmitterEngine{})
+	directPaymentService := services.NewDirectPaymentService(models, distServiceMock, engine.SubmitterEngine{})
 
 	handler := &PaymentsHandler{
 		Models:                      models,

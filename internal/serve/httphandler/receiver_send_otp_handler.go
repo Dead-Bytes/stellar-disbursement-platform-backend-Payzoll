@@ -13,9 +13,9 @@ import (
 	"github.com/stellar/go/support/log"
 	"github.com/stellar/go/support/render/httpjson"
 
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/anchorplatform"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/message"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sepauth"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httperror"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/validators"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/utils"
@@ -101,7 +101,7 @@ func (h ReceiverSendOTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 
 	// Validate SEP-24 JWT claims
-	sep24Claims := anchorplatform.GetSEP24Claims(ctx)
+	sep24Claims := sepauth.GetSEP24Claims(ctx)
 	if sep24Claims == nil {
 		err = fmt.Errorf("no SEP-24 claims found in the request context")
 		log.Ctx(ctx).Error(err)
@@ -232,7 +232,14 @@ func (h ReceiverSendOTPHandler) sendOTP(ctx context.Context, contactType data.Re
 		return fmt.Errorf("cannot execute OTP template: %w", err)
 	}
 
-	msg := message.Message{Body: builder.String()}
+	msg := message.Message{
+		Type: message.MessageTypeReceiverOTP,
+		Body: builder.String(),
+		TemplateVariables: map[message.TemplateVariable]string{
+			message.TemplateVarReceiverOTP: otp,
+			message.TemplateVarOrgName:     organization.Name,
+		},
+	}
 	switch contactType {
 	case data.ReceiverContactTypeSMS:
 		msg.ToPhoneNumber = contactInfo
@@ -257,11 +264,11 @@ func (h ReceiverSendOTPHandler) recordRegistrationAttempt(
 	contactType data.ReceiverContactType,
 	contactInfo string,
 ) {
-	claims := anchorplatform.GetSEP24Claims(ctx)
+	claims := sepauth.GetSEP24Claims(ctx)
 	attempt := data.ReceiverRegistrationAttempt{
 		PhoneNumber:   "",
 		Email:         "",
-		AttemptTs:     time.Now(),
+		AttemptTS:     time.Now(),
 		ClientDomain:  claims.ClientDomain(),
 		TransactionID: claims.TransactionID(),
 		WalletAddress: claims.SEP10StellarAccount(),

@@ -17,8 +17,10 @@ import (
 
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/monitor"
 	monitorMocks "github.com/stellar/stellar-disbursement-platform-backend/internal/monitor/mocks"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
 	httpclientMocks "github.com/stellar/stellar-disbursement-platform-backend/internal/serve/httpclient/mocks"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/utils"
+	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
 	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
 )
 
@@ -63,8 +65,10 @@ func Test_Client_Ping(t *testing.T) {
 			Return(nil, testError).
 			Once()
 
+		setupErrorMonitorExpectations(cMocks.monitorServiceMock, pingPath, http.MethodGet, "no_tenant")
+
 		ok, err := cc.Ping(ctx)
-		assert.EqualError(t, err, fmt.Errorf("making request: submitting request to http://localhost:8080/ping: %w", testError).Error())
+		assert.EqualError(t, err, fmt.Errorf("making request: unsuccessful after multiple attempts: submitting request to http://localhost:8080/ping: %w", testError).Error())
 		assert.False(t, ok)
 	})
 
@@ -86,6 +90,8 @@ func Test_Client_Ping(t *testing.T) {
 			}).
 			Once()
 
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, pingPath, http.MethodGet, http.StatusOK, "no_tenant")
+
 		ok, err := cc.Ping(ctx)
 		assert.NoError(t, err)
 		assert.True(t, ok)
@@ -94,6 +100,9 @@ func Test_Client_Ping(t *testing.T) {
 
 func Test_Client_PostTransfer(t *testing.T) {
 	ctx := context.Background()
+	tnt := &schema.Tenant{ID: "test-id", Name: "test-tenant"}
+	ctx = sdpcontext.SetTenantInContext(ctx, tnt)
+
 	validTransferReq := TransferRequest{
 		Source:         TransferAccount{Type: TransferAccountTypeWallet, ID: "source-id"},
 		Destination:    TransferAccount{Type: TransferAccountTypeBlockchain, Chain: "XLM", Address: "GBG2DFASN2E5ZZSOYH7SJ7HWBKR4M5LYQ5Q5ZVBWS3RI46GDSYTEA6YF", AddressTag: "txmemo2"},
@@ -109,8 +118,10 @@ func Test_Client_PostTransfer(t *testing.T) {
 			Return(nil, testError).
 			Once()
 
+		setupErrorMonitorExpectations(cMocks.monitorServiceMock, transferPath, http.MethodPost, "test-tenant")
+
 		transfer, err := cc.PostTransfer(ctx, validTransferReq)
-		assert.EqualError(t, err, fmt.Errorf("making request: submitting request to http://localhost:8080/v1/transfers: %w", testError).Error())
+		assert.EqualError(t, err, fmt.Errorf("making request: unsuccessful after multiple attempts: submitting request to http://localhost:8080/v1/transfers: %w", testError).Error())
 		assert.Nil(t, transfer)
 	})
 
@@ -124,8 +135,6 @@ func Test_Client_PostTransfer(t *testing.T) {
 	t.Run("post transfer fails auth", func(t *testing.T) {
 		unauthorizedResponse := `{"code": 401, "message": "Malformed key. Does it contain three parts?"}`
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -137,19 +146,7 @@ func Test_Client_PostTransfer(t *testing.T) {
 		cMocks.tenantManagerMock.
 			On("DeactivateTenantDistributionAccount", mock.Anything, tnt.ID).
 			Return(nil).Once()
-		expectedLabels := map[string]string{
-			"endpoint":    transferPath,
-			"method":      http.MethodPost,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusUnauthorized),
-			"tenant_name": tnt.Name,
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, transferPath, http.MethodPost, http.StatusUnauthorized, tnt.Name)
 
 		transfer, err := cc.PostTransfer(ctx, validTransferReq)
 		assert.EqualError(t, err, "handling API response error: circle API error: APIError: Code=401, Message=Malformed key. Does it contain three parts?, Errors=[], StatusCode=401")
@@ -158,8 +155,6 @@ func Test_Client_PostTransfer(t *testing.T) {
 
 	t.Run("post transfer successful", func(t *testing.T) {
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -178,19 +173,7 @@ func Test_Client_PostTransfer(t *testing.T) {
 			}).
 			Once()
 
-		expectedLabels := map[string]string{
-			"endpoint":    transferPath,
-			"method":      http.MethodPost,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusCreated),
-			"tenant_name": "test-tenant",
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, transferPath, http.MethodPost, http.StatusCreated, "test-tenant")
 
 		transfer, err := cc.PostTransfer(ctx, validTransferReq)
 		assert.NoError(t, err)
@@ -199,7 +182,9 @@ func Test_Client_PostTransfer(t *testing.T) {
 }
 
 func Test_Client_GetTransferByID(t *testing.T) {
-	ctx := context.Background()
+	tnt := &schema.Tenant{ID: "test-id", Name: "test-tenant"}
+	ctx := sdpcontext.SetTenantInContext(context.Background(), tnt)
+
 	t.Run("get transfer by id error", func(t *testing.T) {
 		cc, cMocks := newClientWithMocks(t)
 		testError := errors.New("test error")
@@ -208,16 +193,16 @@ func Test_Client_GetTransferByID(t *testing.T) {
 			Return(nil, testError).
 			Once()
 
+		setupErrorMonitorExpectations(cMocks.monitorServiceMock, transferPath, http.MethodGet, "test-tenant")
+
 		transfer, err := cc.GetTransferByID(ctx, "test-id")
-		assert.EqualError(t, err, fmt.Errorf("making request: submitting request to http://localhost:8080/v1/transfers/test-id: %w", testError).Error())
+		assert.EqualError(t, err, fmt.Errorf("making request: unsuccessful after multiple attempts: submitting request to http://localhost:8080/v1/transfers/test-id: %w", testError).Error())
 		assert.Nil(t, transfer)
 	})
 
 	t.Run("get transfer by id fails auth", func(t *testing.T) {
 		unauthorizedResponse := `{"code": 401, "message": "Malformed key. Does it contain three parts?"}`
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -229,19 +214,7 @@ func Test_Client_GetTransferByID(t *testing.T) {
 		cMocks.tenantManagerMock.
 			On("DeactivateTenantDistributionAccount", mock.Anything, tnt.ID).
 			Return(nil).Once()
-		expectedLabels := map[string]string{
-			"endpoint":    transferPath,
-			"method":      http.MethodGet,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusUnauthorized),
-			"tenant_name": tnt.Name,
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, transferPath, http.MethodGet, http.StatusUnauthorized, tnt.Name)
 
 		transfer, err := cc.GetTransferByID(ctx, "test-id")
 		assert.EqualError(t, err, "handling API response error: circle API error: APIError: Code=401, Message=Malformed key. Does it contain three parts?, Errors=[], StatusCode=401")
@@ -250,8 +223,6 @@ func Test_Client_GetTransferByID(t *testing.T) {
 
 	t.Run("get transfer by id successful", func(t *testing.T) {
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -269,19 +240,7 @@ func Test_Client_GetTransferByID(t *testing.T) {
 			}).
 			Once()
 
-		expectedLabels := map[string]string{
-			"endpoint":    transferPath,
-			"method":      http.MethodGet,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusOK),
-			"tenant_name": tnt.Name,
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, transferPath, http.MethodGet, http.StatusOK, tnt.Name)
 
 		transfer, err := cc.GetTransferByID(ctx, "test-id")
 		assert.NoError(t, err)
@@ -306,8 +265,10 @@ func Test_Client_PostRecipient(t *testing.T) {
 			Return(nil, testError).
 			Once()
 
+		setupErrorMonitorExpectations(cMocks.monitorServiceMock, addressRecipientPath, http.MethodPost, "no_tenant")
+
 		recipient, err := cc.PostRecipient(ctx, validRecipientReq)
-		assert.EqualError(t, err, fmt.Errorf("making request: submitting request to http://localhost:8080/v1/addressBook/recipients: %w", testError).Error())
+		assert.EqualError(t, err, fmt.Errorf("making request: unsuccessful after multiple attempts: submitting request to http://localhost:8080/v1/addressBook/recipients: %w", testError).Error())
 		assert.Nil(t, recipient)
 	})
 
@@ -321,8 +282,8 @@ func Test_Client_PostRecipient(t *testing.T) {
 	t.Run("post recipient fails auth", func(t *testing.T) {
 		unauthorizedResponse := `{"code": 401, "message": "Malformed key. Does it contain three parts?"}`
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
+		tnt := &schema.Tenant{ID: "test-id", Name: "test-tenant"}
+		ctx = sdpcontext.SetTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -334,19 +295,7 @@ func Test_Client_PostRecipient(t *testing.T) {
 		cMocks.tenantManagerMock.
 			On("DeactivateTenantDistributionAccount", mock.Anything, tnt.ID).
 			Return(nil).Once()
-		expectedLabels := map[string]string{
-			"endpoint":    addressRecipientPath,
-			"method":      http.MethodPost,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusUnauthorized),
-			"tenant_name": tnt.Name,
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, addressRecipientPath, http.MethodPost, http.StatusUnauthorized, tnt.Name)
 
 		recipient, err := cc.PostRecipient(ctx, validRecipientReq)
 		assert.EqualError(t, err, "handling API response error: circle API error: APIError: Code=401, Message=Malformed key. Does it contain three parts?, Errors=[], StatusCode=401")
@@ -355,8 +304,8 @@ func Test_Client_PostRecipient(t *testing.T) {
 
 	t.Run("post transfer successful", func(t *testing.T) {
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
+		tnt := &schema.Tenant{ID: "test-id", Name: "test-tenant"}
+		ctx = sdpcontext.SetTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -375,19 +324,7 @@ func Test_Client_PostRecipient(t *testing.T) {
 			}).
 			Once()
 
-		expectedLabels := map[string]string{
-			"endpoint":    addressRecipientPath,
-			"method":      http.MethodPost,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusCreated),
-			"tenant_name": "test-tenant",
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, addressRecipientPath, http.MethodPost, http.StatusCreated, "test-tenant")
 
 		recipient, err := cc.PostRecipient(ctx, validRecipientReq)
 		assert.NoError(t, err)
@@ -405,16 +342,18 @@ func Test_Client_GetRecipientByID(t *testing.T) {
 			Return(nil, testError).
 			Once()
 
+		setupErrorMonitorExpectations(cMocks.monitorServiceMock, addressRecipientPath, http.MethodGet, "no_tenant")
+
 		recipient, err := cc.GetRecipientByID(ctx, "test-id")
-		assert.EqualError(t, err, fmt.Errorf("making request: submitting request to http://localhost:8080/v1/addressBook/recipients/test-id: %w", testError).Error())
+		assert.EqualError(t, err, fmt.Errorf("making request: unsuccessful after multiple attempts: submitting request to http://localhost:8080/v1/addressBook/recipients/test-id: %w", testError).Error())
 		assert.Nil(t, recipient)
 	})
 
 	t.Run("get recipient by id fails auth", func(t *testing.T) {
 		unauthorizedResponse := `{"code": 401, "message": "Malformed key. Does it contain three parts?"}`
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
+		tnt := &schema.Tenant{ID: "test-id", Name: "test-tenant"}
+		ctx = sdpcontext.SetTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -426,19 +365,7 @@ func Test_Client_GetRecipientByID(t *testing.T) {
 		cMocks.tenantManagerMock.
 			On("DeactivateTenantDistributionAccount", mock.Anything, tnt.ID).
 			Return(nil).Once()
-		expectedLabels := map[string]string{
-			"endpoint":    addressRecipientPath,
-			"method":      http.MethodGet,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusUnauthorized),
-			"tenant_name": tnt.Name,
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, addressRecipientPath, http.MethodGet, http.StatusUnauthorized, tnt.Name)
 
 		recipient, err := cc.GetRecipientByID(ctx, "test-id")
 		assert.EqualError(t, err, "handling API response error: circle API error: APIError: Code=401, Message=Malformed key. Does it contain three parts?, Errors=[], StatusCode=401")
@@ -447,8 +374,8 @@ func Test_Client_GetRecipientByID(t *testing.T) {
 
 	t.Run("get recipient by id successful", func(t *testing.T) {
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
+		tnt := &schema.Tenant{ID: "test-id", Name: "test-tenant"}
+		ctx = sdpcontext.SetTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -466,19 +393,7 @@ func Test_Client_GetRecipientByID(t *testing.T) {
 			}).
 			Once()
 
-		expectedLabels := map[string]string{
-			"endpoint":    addressRecipientPath,
-			"method":      http.MethodGet,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusOK),
-			"tenant_name": tnt.Name,
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, addressRecipientPath, http.MethodGet, http.StatusOK, tnt.Name)
 
 		recipient, err := cc.GetRecipientByID(ctx, "test-id")
 		assert.NoError(t, err)
@@ -504,8 +419,10 @@ func Test_Client_PostPayout(t *testing.T) {
 			Return(nil, testError).
 			Once()
 
+		setupErrorMonitorExpectations(cMocks.monitorServiceMock, payoutPath, http.MethodPost, "no_tenant")
+
 		payout, err := cc.PostPayout(ctx, validPayoutReq)
-		assert.EqualError(t, err, fmt.Errorf("making request: submitting request to http://localhost:8080/v1/payouts: %w", testError).Error())
+		assert.EqualError(t, err, fmt.Errorf("making request: unsuccessful after multiple attempts: submitting request to http://localhost:8080/v1/payouts: %w", testError).Error())
 		assert.Nil(t, payout)
 	})
 
@@ -519,8 +436,8 @@ func Test_Client_PostPayout(t *testing.T) {
 	t.Run("post payout fails auth", func(t *testing.T) {
 		unauthorizedResponse := `{"code": 401, "message": "Malformed key. Does it contain three parts?"}`
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
+		tnt := &schema.Tenant{ID: "test-id", Name: "test-tenant"}
+		ctx = sdpcontext.SetTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -532,19 +449,7 @@ func Test_Client_PostPayout(t *testing.T) {
 		cMocks.tenantManagerMock.
 			On("DeactivateTenantDistributionAccount", mock.Anything, tnt.ID).
 			Return(nil).Once()
-		expectedLabels := map[string]string{
-			"endpoint":    payoutPath,
-			"method":      http.MethodPost,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusUnauthorized),
-			"tenant_name": tnt.Name,
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, payoutPath, http.MethodPost, http.StatusUnauthorized, tnt.Name)
 
 		payout, err := cc.PostPayout(ctx, validPayoutReq)
 		assert.EqualError(t, err, "handling API response error: circle API error: APIError: Code=401, Message=Malformed key. Does it contain three parts?, Errors=[], StatusCode=401")
@@ -553,8 +458,8 @@ func Test_Client_PostPayout(t *testing.T) {
 
 	t.Run("post transfer successful", func(t *testing.T) {
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
+		tnt := &schema.Tenant{ID: "test-id", Name: "test-tenant"}
+		ctx = sdpcontext.SetTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -573,19 +478,7 @@ func Test_Client_PostPayout(t *testing.T) {
 			}).
 			Once()
 
-		expectedLabels := map[string]string{
-			"endpoint":    payoutPath,
-			"method":      http.MethodPost,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusCreated),
-			"tenant_name": "test-tenant",
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, payoutPath, http.MethodPost, http.StatusCreated, "test-tenant")
 
 		payout, err := cc.PostPayout(ctx, validPayoutReq)
 		assert.NoError(t, err)
@@ -603,16 +496,18 @@ func Test_Client_GetPayoutByID(t *testing.T) {
 			Return(nil, testError).
 			Once()
 
+		setupErrorMonitorExpectations(cMocks.monitorServiceMock, payoutPath, http.MethodGet, "no_tenant")
+
 		payout, err := cc.GetPayoutByID(ctx, "test-id")
-		assert.EqualError(t, err, fmt.Errorf("making request: submitting request to http://localhost:8080/v1/payouts/test-id: %w", testError).Error())
+		assert.EqualError(t, err, fmt.Errorf("making request: unsuccessful after multiple attempts: submitting request to http://localhost:8080/v1/payouts/test-id: %w", testError).Error())
 		assert.Nil(t, payout)
 	})
 
 	t.Run("get payout by id fails auth", func(t *testing.T) {
 		unauthorizedResponse := `{"code": 401, "message": "Malformed key. Does it contain three parts?"}`
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
+		tnt := &schema.Tenant{ID: "test-id", Name: "test-tenant"}
+		ctx = sdpcontext.SetTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -624,19 +519,7 @@ func Test_Client_GetPayoutByID(t *testing.T) {
 		cMocks.tenantManagerMock.
 			On("DeactivateTenantDistributionAccount", mock.Anything, tnt.ID).
 			Return(nil).Once()
-		expectedLabels := map[string]string{
-			"endpoint":    payoutPath,
-			"method":      http.MethodGet,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusUnauthorized),
-			"tenant_name": tnt.Name,
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, payoutPath, http.MethodGet, http.StatusUnauthorized, tnt.Name)
 
 		payout, err := cc.GetPayoutByID(ctx, "test-id")
 		assert.EqualError(t, err, "handling API response error: circle API error: APIError: Code=401, Message=Malformed key. Does it contain three parts?, Errors=[], StatusCode=401")
@@ -645,8 +528,8 @@ func Test_Client_GetPayoutByID(t *testing.T) {
 
 	t.Run("get payout by id successful", func(t *testing.T) {
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
+		tnt := &schema.Tenant{ID: "test-id", Name: "test-tenant"}
+		ctx = sdpcontext.SetTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -664,19 +547,7 @@ func Test_Client_GetPayoutByID(t *testing.T) {
 			}).
 			Once()
 
-		expectedLabels := map[string]string{
-			"endpoint":    payoutPath,
-			"method":      http.MethodGet,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusOK),
-			"tenant_name": tnt.Name,
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, payoutPath, http.MethodGet, http.StatusOK, tnt.Name)
 
 		payout, err := cc.GetPayoutByID(ctx, "test-id")
 		assert.NoError(t, err)
@@ -702,8 +573,10 @@ func Test_Client_GetBusinessBalances(t *testing.T) {
 			Return(nil, testError).
 			Once()
 
+		setupErrorMonitorExpectations(cMocks.monitorServiceMock, businessBalancesPath, http.MethodGet, "no_tenant")
+
 		wallet, err := cc.GetBusinessBalances(ctx)
-		assert.EqualError(t, err, fmt.Errorf("making request: submitting request to http://localhost:8080/v1/businessAccount/balances: %w", testError).Error())
+		assert.EqualError(t, err, fmt.Errorf("making request: unsuccessful after multiple attempts: submitting request to http://localhost:8080/v1/businessAccount/balances: %w", testError).Error())
 		assert.Nil(t, wallet)
 	})
 
@@ -713,8 +586,8 @@ func Test_Client_GetBusinessBalances(t *testing.T) {
 			"message": "Malformed key. Does it contain three parts?"
 		}`
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
+		tnt := &schema.Tenant{ID: "test-id"}
+		ctx = sdpcontext.SetTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -726,19 +599,7 @@ func Test_Client_GetBusinessBalances(t *testing.T) {
 		cMocks.tenantManagerMock.
 			On("DeactivateTenantDistributionAccount", mock.Anything, tnt.ID).
 			Return(nil).Once()
-		expectedLabels := map[string]string{
-			"endpoint":    businessBalancesPath,
-			"method":      http.MethodGet,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusUnauthorized),
-			"tenant_name": tnt.Name,
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, businessBalancesPath, http.MethodGet, http.StatusUnauthorized, tnt.Name)
 
 		transfer, err := cc.GetBusinessBalances(ctx)
 		assert.EqualError(t, err, "handling API response error: circle API error: APIError: Code=401, Message=Malformed key. Does it contain three parts?, Errors=[], StatusCode=401")
@@ -759,8 +620,8 @@ func Test_Client_GetBusinessBalances(t *testing.T) {
 			}
 		}`
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
+		tnt := &schema.Tenant{ID: "test-id", Name: "test-tenant"}
+		ctx = sdpcontext.SetTenantInContext(ctx, tnt)
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
 			Return(&http.Response{
@@ -776,19 +637,7 @@ func Test_Client_GetBusinessBalances(t *testing.T) {
 				assert.Equal(t, "Bearer test-key", req.Header.Get("Authorization"))
 			}).
 			Once()
-		expectedLabels := map[string]string{
-			"endpoint":    businessBalancesPath,
-			"method":      http.MethodGet,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusOK),
-			"tenant_name": tnt.Name,
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, businessBalancesPath, http.MethodGet, http.StatusOK, tnt.Name)
 
 		businessBalances, err := cc.GetBusinessBalances(ctx)
 		assert.NoError(t, err)
@@ -821,8 +670,10 @@ func Test_Client_GetAccountConfiguration(t *testing.T) {
 			Return(nil, testError).
 			Once()
 
+		setupErrorMonitorExpectations(cMocks.monitorServiceMock, configurationPath, http.MethodGet, "no_tenant")
+
 		wallet, err := cc.GetAccountConfiguration(ctx)
-		assert.EqualError(t, err, fmt.Errorf("making request: submitting request to http://localhost:8080/v1/configuration: %w", testError).Error())
+		assert.EqualError(t, err, fmt.Errorf("making request: unsuccessful after multiple attempts: submitting request to http://localhost:8080/v1/configuration: %w", testError).Error())
 		assert.Nil(t, wallet)
 	})
 
@@ -832,8 +683,8 @@ func Test_Client_GetAccountConfiguration(t *testing.T) {
 			"message": "Malformed key. Does it contain three parts?"
 		}`
 		cc, cMocks := newClientWithMocks(t)
-		tnt := &tenant.Tenant{ID: "test-id"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
+		tnt := &schema.Tenant{ID: "test-id"}
+		ctx = sdpcontext.SetTenantInContext(ctx, tnt)
 
 		cMocks.httpClientMock.
 			On("Do", mock.Anything).
@@ -845,19 +696,7 @@ func Test_Client_GetAccountConfiguration(t *testing.T) {
 		cMocks.tenantManagerMock.
 			On("DeactivateTenantDistributionAccount", mock.Anything, tnt.ID).
 			Return(nil).Once()
-		expectedLabels := map[string]string{
-			"endpoint":    configurationPath,
-			"method":      http.MethodGet,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusUnauthorized),
-			"tenant_name": tnt.Name,
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, configurationPath, http.MethodGet, http.StatusUnauthorized, tnt.Name)
 
 		transfer, err := cc.GetAccountConfiguration(ctx)
 		assert.EqualError(t, err, "handling API response error: circle API error: APIError: Code=401, Message=Malformed key. Does it contain three parts?, Errors=[], StatusCode=401")
@@ -872,8 +711,8 @@ func Test_Client_GetAccountConfiguration(t *testing.T) {
 				}
 			}
 		}`
-		tnt := &tenant.Tenant{ID: "test-id", Name: "test-tenant"}
-		ctx = tenant.SaveTenantInContext(ctx, tnt)
+		tnt := &schema.Tenant{ID: "test-id", Name: "test-tenant"}
+		ctx = sdpcontext.SetTenantInContext(ctx, tnt)
 
 		cc, cMocks := newClientWithMocks(t)
 		cMocks.httpClientMock.
@@ -891,19 +730,7 @@ func Test_Client_GetAccountConfiguration(t *testing.T) {
 				assert.Equal(t, "Bearer test-key", req.Header.Get("Authorization"))
 			}).
 			Once()
-		expectedLabels := map[string]string{
-			"endpoint":    configurationPath,
-			"method":      http.MethodGet,
-			"status":      "success",
-			"status_code": strconv.Itoa(http.StatusOK),
-			"tenant_name": tnt.Name,
-		}
-		cMocks.monitorServiceMock.
-			On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
-			Return(nil).Once()
-		cMocks.monitorServiceMock.
-			On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
-			Return(nil).Once()
+		setupSuccessMonitorExpectations(cMocks.monitorServiceMock, configurationPath, http.MethodGet, http.StatusOK, tnt.Name)
 
 		config, err := cc.GetAccountConfiguration(ctx)
 		assert.NoError(t, err)
@@ -918,8 +745,8 @@ func Test_Client_GetAccountConfiguration(t *testing.T) {
 
 func Test_Client_handleError(t *testing.T) {
 	ctx := context.Background()
-	tnt := &tenant.Tenant{ID: "test-id"}
-	ctx = tenant.SaveTenantInContext(ctx, tnt)
+	tnt := &schema.Tenant{ID: "test-id"}
+	ctx = sdpcontext.SetTenantInContext(ctx, tnt)
 
 	cc, cMocks := newClientWithMocks(t)
 
@@ -1043,6 +870,9 @@ func Test_Client_request(t *testing.T) {
 			httpClientMock := cMocks.httpClientMock
 
 			ctx := context.Background()
+			tnt := &schema.Tenant{ID: "test-id", Name: "test-tenant"}
+			ctx = sdpcontext.SetTenantInContext(ctx, tnt)
+
 			u := "https://api-sandbox.circle.com/test"
 			method := http.MethodGet
 			isAuthed := true
@@ -1052,6 +882,8 @@ func Test_Client_request(t *testing.T) {
 				cMocks.httpClientMock.
 					On("Do", mock.Anything).
 					Return(&resp, nil).Once()
+
+				setupSuccessMonitorExpectations(cMocks.monitorServiceMock, "/test", method, resp.StatusCode, tnt.Name)
 			}
 
 			resp, err := cc.request(ctx, "/test", u, method, isAuthed, body)
@@ -1077,8 +909,35 @@ func Test_Client_request(t *testing.T) {
 	}
 }
 
+// setupMonitorExpectations sets up both histogram and counter expectations for the monitor service
+func setupMonitorExpectations(mockService *monitorMocks.MockMonitorService, endpoint, method, status, statusCode, tenantName string) {
+	expectedLabels := map[string]string{
+		"endpoint":    endpoint,
+		"method":      method,
+		"status":      status,
+		"status_code": statusCode,
+		"tenant_name": tenantName,
+	}
+	mockService.
+		On("MonitorHistogram", mock.Anything, monitor.CircleAPIRequestDurationTag, expectedLabels).
+		Return(nil).Once()
+	mockService.
+		On("MonitorCounters", monitor.CircleAPIRequestsTotalTag, expectedLabels).
+		Return(nil).Once()
+}
+
+// setupErrorMonitorExpectations sets up monitor expectations for error cases
+func setupErrorMonitorExpectations(mockService *monitorMocks.MockMonitorService, endpoint, method, tenantName string) {
+	setupMonitorExpectations(mockService, endpoint, method, "error", "0", tenantName)
+}
+
+// setupSuccessMonitorExpectations sets up monitor expectations for success cases
+func setupSuccessMonitorExpectations(mockService *monitorMocks.MockMonitorService, endpoint, method string, statusCode int, tenantName string) {
+	setupMonitorExpectations(mockService, endpoint, method, "success", strconv.Itoa(statusCode), tenantName)
+}
+
 func newClientWithMocks(t *testing.T) (Client, *clientMocks) {
-	httpClientMock := httpclientMocks.NewHttpClientMock(t)
+	httpClientMock := httpclientMocks.NewHTTPClientMock(t)
 	tntManagerMock := tenant.NewTenantManagerMock(t)
 	monitorSvcMock := monitorMocks.NewMockMonitorService(t)
 
@@ -1096,7 +955,7 @@ func newClientWithMocks(t *testing.T) (Client, *clientMocks) {
 }
 
 type clientMocks struct {
-	httpClientMock     *httpclientMocks.HttpClientMock
+	httpClientMock     *httpclientMocks.HTTPClientMock
 	tenantManagerMock  *tenant.TenantManagerMock
 	monitorServiceMock *monitorMocks.MockMonitorService
 }

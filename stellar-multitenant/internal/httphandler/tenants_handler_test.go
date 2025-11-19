@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/shopspring/decimal"
 	"github.com/stellar/go/clients/horizonclient"
 	"github.com/stellar/go/keypair"
+	"github.com/stellar/go/protocols/horizon"
 	"github.com/stellar/go/txnbuild"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -73,7 +75,7 @@ func Test_TenantHandler_Get(t *testing.T) {
 	tnt1 := tenant.CreateTenantFixture(t, ctx, dbConnectionPool, "myorg1", "GCTNUNQVX7BNIP5AUWW2R4YC7G6R3JGUDNMGT7H62BGBUY4A4V6ROAAH")
 	tnt2 := tenant.CreateTenantFixture(t, ctx, dbConnectionPool, "myorg2", "GB37V3J5C3RAJY6BI52MAAWF6AVKJH7J4L2DVBMOP7WQJHQPNIBR3FKH")
 	deactivatedTnt := tenant.CreateTenantFixture(t, ctx, dbConnectionPool, "dorg", "GBKXOCCQ5HXYOJ7NH5LXDKOBKU22TE6XOKHKYADZPRQFLR2F5KPFVILF")
-	dStatus := tenant.DeactivatedTenantStatus
+	dStatus := schema.DeactivatedTenantStatus
 	deactivatedTnt, err = handler.Manager.UpdateTenantConfig(ctx, &tenant.TenantUpdate{
 		ID:     deactivatedTnt.ID,
 		Status: &dStatus,
@@ -314,6 +316,33 @@ func Test_TenantHandler_Post(t *testing.T) {
 			}).
 			Return(msgClientErr).
 			Once()
+
+		if accountType.IsStellar() {
+			sigRouter.
+				On("SignStellarTransaction", ctx, mock.AnythingOfType("*txnbuild.Transaction"), distAccToReturn).
+				Return(&txnbuild.Transaction{}, nil).
+				Once()
+
+			if accountType == schema.DistributionAccountStellarDBVault {
+				sigRouter.
+					On("SignStellarTransaction", ctx, mock.AnythingOfType("*txnbuild.Transaction"), hostAccount).
+					Return(&txnbuild.Transaction{}, nil).
+					Maybe()
+			}
+		}
+
+		mHorizonClient.
+			On("AccountDetail", horizonclient.AccountRequest{AccountID: distAccAddress}).
+			Return(horizon.Account{
+				AccountID: distAccAddress,
+				Sequence:  1,
+			}, nil).
+			Maybe()
+
+		mHorizonClient.
+			On("SubmitTransactionWithOptions", mock.AnythingOfType("*txnbuild.Transaction"), horizonclient.SubmitTxOpts{SkipMemoRequiredCheck: true}).
+			Return(horizon.Transaction{}, nil).
+			Maybe()
 
 		if msgClientErr != nil {
 			crashTrackerMock.
@@ -683,7 +712,7 @@ func Test_TenantHandler_Patch_error(t *testing.T) {
 		urlOverride    string
 		prepareMocksFn func()
 		reqBody        string
-		initialStatus  tenant.TenantStatus
+		initialStatus  schema.TenantStatus
 		expectedStatus int
 		expectedBody   map[string]interface{}
 	}{
@@ -735,41 +764,41 @@ func Test_TenantHandler_Patch_error(t *testing.T) {
 		// status transition errors
 		{
 			name:           "400 response on status transition forbidden (deactivated->created)",
-			initialStatus:  tenant.DeactivatedTenantStatus,
-			reqBody:        fmt.Sprintf(`{"status": %q}`, tenant.CreatedTenantStatus),
+			initialStatus:  schema.DeactivatedTenantStatus,
+			reqBody:        fmt.Sprintf(`{"status": %q}`, schema.CreatedTenantStatus),
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   map[string]interface{}{"error": "cannot perform update on tenant to requested status"},
 		},
 		{
 			name:           "200 response on NOOP transition (deactivated->deactivated)",
-			initialStatus:  tenant.DeactivatedTenantStatus,
-			reqBody:        fmt.Sprintf(`{"status": %q}`, tenant.DeactivatedTenantStatus),
+			initialStatus:  schema.DeactivatedTenantStatus,
+			reqBody:        fmt.Sprintf(`{"status": %q}`, schema.DeactivatedTenantStatus),
 			expectedStatus: http.StatusOK,
 			expectedBody: map[string]interface{}{
 				"id":     tnt.ID,
-				"status": string(tenant.DeactivatedTenantStatus),
+				"status": string(schema.DeactivatedTenantStatus),
 			},
 		},
 		{
 			name:           "200 response on NOOP transition (activated->activated)",
-			initialStatus:  tenant.ActivatedTenantStatus,
-			reqBody:        fmt.Sprintf(`{"status": %q}`, tenant.ActivatedTenantStatus),
+			initialStatus:  schema.ActivatedTenantStatus,
+			reqBody:        fmt.Sprintf(`{"status": %q}`, schema.ActivatedTenantStatus),
 			expectedStatus: http.StatusOK,
 			expectedBody: map[string]interface{}{
 				"id":     tnt.ID,
-				"status": string(tenant.ActivatedTenantStatus),
+				"status": string(schema.ActivatedTenantStatus),
 			},
 		},
 		{
 			name:           "400 response on status transition forbidden (activated->created)",
-			initialStatus:  tenant.ActivatedTenantStatus,
-			reqBody:        fmt.Sprintf(`{"status": %q}`, tenant.CreatedTenantStatus),
+			initialStatus:  schema.ActivatedTenantStatus,
+			reqBody:        fmt.Sprintf(`{"status": %q}`, schema.CreatedTenantStatus),
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   map[string]interface{}{"error": "cannot perform update on tenant to requested status"},
 		},
 		{
 			name:          "400 response if attempting to deactivate a tenant with active payments",
-			initialStatus: tenant.ActivatedTenantStatus,
+			initialStatus: schema.ActivatedTenantStatus,
 			prepareMocksFn: func() {
 				wallet := data.CreateWalletFixture(t, ctx, dbConnectionPool, "wallet", "https://www.wallet.com", "www.wallet.com", "wallet://")
 				asset := data.CreateAssetFixture(t, ctx, dbConnectionPool, "USDC", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVV")
@@ -788,7 +817,7 @@ func Test_TenantHandler_Patch_error(t *testing.T) {
 					ReceiverWallet: rw,
 				})
 			},
-			reqBody:        fmt.Sprintf(`{"status": %q}`, tenant.DeactivatedTenantStatus),
+			reqBody:        fmt.Sprintf(`{"status": %q}`, schema.DeactivatedTenantStatus),
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   map[string]interface{}{"error": services.ErrCannotDeactivateTenantWithActivePayments.Error()},
 		},
@@ -858,17 +887,17 @@ func Test_TenantHandler_Patch_success(t *testing.T) {
 	testCases := []struct {
 		name           string
 		reqBody        string
-		expectedBodyFn func(tnt *tenant.Tenant) map[string]interface{}
+		expectedBodyFn func(tnt *schema.Tenant) map[string]interface{}
 	}{
 		{
 			name:    "🎉 successfully updates the status",
 			reqBody: `{"status": "TENANT_DEACTIVATED"}`,
-			expectedBodyFn: func(tnt *tenant.Tenant) map[string]interface{} {
+			expectedBodyFn: func(tnt *schema.Tenant) map[string]interface{} {
 				return map[string]interface{}{
 					"id":                           tnt.ID,
 					"base_url":                     *tnt.BaseURL,
 					"sdp_ui_base_url":              nil,
-					"status":                       string(tenant.DeactivatedTenantStatus),
+					"status":                       string(schema.DeactivatedTenantStatus),
 					"distribution_account_address": "GCTNUNQVX7BNIP5AUWW2R4YC7G6R3JGUDNMGT7H62BGBUY4A4V6ROAAH",
 					"is_default":                   false,
 				}
@@ -877,12 +906,12 @@ func Test_TenantHandler_Patch_success(t *testing.T) {
 		{
 			name:    "🎉 successfully updates the base_url",
 			reqBody: `{"base_url": "http://valid.com"}`,
-			expectedBodyFn: func(tnt *tenant.Tenant) map[string]interface{} {
+			expectedBodyFn: func(tnt *schema.Tenant) map[string]interface{} {
 				return map[string]interface{}{
 					"id":                           tnt.ID,
 					"base_url":                     "http://valid.com",
 					"sdp_ui_base_url":              nil,
-					"status":                       string(tenant.ActivatedTenantStatus),
+					"status":                       string(schema.ActivatedTenantStatus),
 					"distribution_account_address": "GCTNUNQVX7BNIP5AUWW2R4YC7G6R3JGUDNMGT7H62BGBUY4A4V6ROAAH",
 					"is_default":                   false,
 				}
@@ -891,12 +920,12 @@ func Test_TenantHandler_Patch_success(t *testing.T) {
 		{
 			name:    "🎉 successfully updates the sdp_ui_base_url",
 			reqBody: `{"sdp_ui_base_url": "http://ui.valid.com"}`,
-			expectedBodyFn: func(tnt *tenant.Tenant) map[string]interface{} {
+			expectedBodyFn: func(tnt *schema.Tenant) map[string]interface{} {
 				return map[string]interface{}{
 					"id":                           tnt.ID,
 					"base_url":                     *tnt.BaseURL,
 					"sdp_ui_base_url":              "http://ui.valid.com",
-					"status":                       string(tenant.ActivatedTenantStatus),
+					"status":                       string(schema.ActivatedTenantStatus),
 					"distribution_account_address": "GCTNUNQVX7BNIP5AUWW2R4YC7G6R3JGUDNMGT7H62BGBUY4A4V6ROAAH",
 					"is_default":                   false,
 				}
@@ -909,12 +938,12 @@ func Test_TenantHandler_Patch_success(t *testing.T) {
 				"base_url": "http://valid.com",
 				"sdp_ui_base_url": "http://ui.valid.com"
 			}`,
-			expectedBodyFn: func(tnt *tenant.Tenant) map[string]interface{} {
+			expectedBodyFn: func(tnt *schema.Tenant) map[string]interface{} {
 				return map[string]interface{}{
 					"id":                           tnt.ID,
 					"base_url":                     "http://valid.com",
 					"sdp_ui_base_url":              "http://ui.valid.com",
-					"status":                       string(tenant.DeactivatedTenantStatus),
+					"status":                       string(schema.DeactivatedTenantStatus),
 					"distribution_account_address": "GCTNUNQVX7BNIP5AUWW2R4YC7G6R3JGUDNMGT7H62BGBUY4A4V6ROAAH",
 					"is_default":                   false,
 				}
@@ -936,7 +965,7 @@ func Test_TenantHandler_Patch_success(t *testing.T) {
 			defer tenant.DeleteAllTenantsFixture(t, ctx, dbConnectionPool)
 
 			// Enforce initial status
-			initialStatus := tenant.ActivatedTenantStatus
+			initialStatus := schema.ActivatedTenantStatus
 			_, err = handler.Manager.UpdateTenantConfig(ctx, &tenant.TenantUpdate{
 				ID:     tnt.ID,
 				Status: &initialStatus,
@@ -1144,7 +1173,7 @@ func Test_TenantHandler_Delete(t *testing.T) {
 				tntManagerMock.On("GetTenant", mock.Anything, &tenant.QueryParams{
 					Filters: map[tenant.FilterKey]interface{}{tenant.FilterKeyID: tntID},
 				}).
-					Return(&tenant.Tenant{ID: tntID, Status: tenant.CreatedTenantStatus, DeletedAt: &deletedAt}, nil).
+					Return(&schema.Tenant{ID: tntID, Status: schema.CreatedTenantStatus, DeletedAt: &deletedAt}, nil).
 					Once()
 			},
 			expectedStatus: http.StatusNotModified,
@@ -1156,7 +1185,7 @@ func Test_TenantHandler_Delete(t *testing.T) {
 				tntManagerMock.On("GetTenant", mock.Anything, &tenant.QueryParams{
 					Filters: map[tenant.FilterKey]interface{}{tenant.FilterKeyID: tntID},
 				}).
-					Return(&tenant.Tenant{ID: tntID, Status: tenant.CreatedTenantStatus}, nil).
+					Return(&schema.Tenant{ID: tntID, Status: schema.CreatedTenantStatus}, nil).
 					Once()
 			},
 			expectedStatus: http.StatusBadRequest,
@@ -1168,7 +1197,7 @@ func Test_TenantHandler_Delete(t *testing.T) {
 				tntManagerMock.On("GetTenant", mock.Anything, &tenant.QueryParams{
 					Filters: map[tenant.FilterKey]interface{}{tenant.FilterKeyID: tntID},
 				}).
-					Return(&tenant.Tenant{ID: tntID, Status: tenant.DeactivatedTenantStatus, DistributionAccountAddress: &tntDistributionAccAddress}, nil).
+					Return(&schema.Tenant{ID: tntID, Status: schema.DeactivatedTenantStatus, DistributionAccountAddress: &tntDistributionAccAddress}, nil).
 					Once()
 				distAccResolver.On("HostDistributionAccount").Return(hostAccount).Once()
 				distAccResolver.On("DistributionAccount", mock.Anything, tntID).Return(tntDistributionAcc, nil).Once()
@@ -1182,13 +1211,13 @@ func Test_TenantHandler_Delete(t *testing.T) {
 			mockTntManagerFn: func(tntManagerMock *tenant.TenantManagerMock, _ *horizonclient.MockClient) {
 				tntManagerMock.On("GetTenant", mock.Anything, &tenant.QueryParams{
 					Filters: map[tenant.FilterKey]interface{}{tenant.FilterKeyID: tntID},
-				}).Return(&tenant.Tenant{ID: tntID, Status: tenant.DeactivatedTenantStatus, DistributionAccountAddress: &tntDistributionAccAddress}, nil).
+				}).Return(&schema.Tenant{ID: tntID, Status: schema.DeactivatedTenantStatus, DistributionAccountAddress: &tntDistributionAccAddress}, nil).
 					Once()
 				distAccResolver.On("HostDistributionAccount").Return(hostAccount).Once()
 				distAccResolver.On("DistributionAccount", mock.Anything, tntID).Return(tntDistributionAcc, nil).Once()
 				distAccSvc.On("GetBalances", mock.Anything, &tntDistributionAcc).
-					Return(map[data.Asset]float64{
-						{Code: assets.USDCAssetCode, Issuer: assets.USDCAssetIssuerTestnet}: 100.0,
+					Return(map[data.Asset]decimal.Decimal{
+						{Code: assets.USDCAssetCode, Issuer: assets.USDCAssetIssuerTestnet}: decimal.NewFromFloat(100.0),
 					}, nil).Once()
 			},
 			expectedStatus: http.StatusBadRequest,
@@ -1199,13 +1228,13 @@ func Test_TenantHandler_Delete(t *testing.T) {
 			mockTntManagerFn: func(tntManagerMock *tenant.TenantManagerMock, _ *horizonclient.MockClient) {
 				tntManagerMock.On("GetTenant", mock.Anything, &tenant.QueryParams{
 					Filters: map[tenant.FilterKey]interface{}{tenant.FilterKeyID: tntID},
-				}).Return(&tenant.Tenant{ID: tntID, Status: tenant.DeactivatedTenantStatus, DistributionAccountAddress: &tntDistributionAccAddress}, nil).
+				}).Return(&schema.Tenant{ID: tntID, Status: schema.DeactivatedTenantStatus, DistributionAccountAddress: &tntDistributionAccAddress}, nil).
 					Once()
 				distAccResolver.On("HostDistributionAccount").Return(hostAccount).Once()
 				distAccResolver.On("DistributionAccount", mock.Anything, tntID).Return(tntDistributionAcc, nil).Once()
 				distAccSvc.On("GetBalances", mock.Anything, &tntDistributionAcc).
-					Return(map[data.Asset]float64{
-						{Code: "XLM", Issuer: ""}: 120.0,
+					Return(map[data.Asset]decimal.Decimal{
+						{Code: "XLM", Issuer: ""}: decimal.NewFromFloat(120.0),
 					}, nil).Once()
 			},
 			expectedStatus: http.StatusBadRequest,
@@ -1217,12 +1246,12 @@ func Test_TenantHandler_Delete(t *testing.T) {
 				tntManagerMock.On("GetTenant", mock.Anything, &tenant.QueryParams{
 					Filters: map[tenant.FilterKey]interface{}{tenant.FilterKeyID: tntID},
 				}).
-					Return(&tenant.Tenant{ID: tntID, Status: tenant.DeactivatedTenantStatus, DistributionAccountAddress: &tntDistributionAccAddress}, nil).
+					Return(&schema.Tenant{ID: tntID, Status: schema.DeactivatedTenantStatus, DistributionAccountAddress: &tntDistributionAccAddress}, nil).
 					Once()
 				distAccResolver.On("HostDistributionAccount").Return(hostAccount).Once()
 				distAccResolver.On("DistributionAccount", mock.Anything, tntID).Return(tntDistributionAcc, nil).Once()
 				distAccSvc.On("GetBalances", mock.Anything, &tntDistributionAcc).
-					Return(map[data.Asset]float64{}, nil).Once()
+					Return(map[data.Asset]decimal.Decimal{}, nil).Once()
 				tntManagerMock.On("SoftDeleteTenantByID", mock.Anything, tntID).
 					Return(nil, errors.New("foobar")).
 					Once()
@@ -1236,14 +1265,14 @@ func Test_TenantHandler_Delete(t *testing.T) {
 				tntManagerMock.On("GetTenant", mock.Anything, &tenant.QueryParams{
 					Filters: map[tenant.FilterKey]interface{}{tenant.FilterKeyID: tntID},
 				}).
-					Return(&tenant.Tenant{ID: tntID, Status: tenant.DeactivatedTenantStatus, DistributionAccountAddress: &tntDistributionAccAddress}, nil).
+					Return(&schema.Tenant{ID: tntID, Status: schema.DeactivatedTenantStatus, DistributionAccountAddress: &tntDistributionAccAddress}, nil).
 					Once()
 				hAcc := schema.NewDefaultHostAccount(tntDistributionAccAddress)
 				distAccResolver.On("HostDistributionAccount").Return(hAcc).Once()
 				tntManagerMock.On("SoftDeleteTenantByID", mock.Anything, tntID).
-					Return(&tenant.Tenant{
+					Return(&schema.Tenant{
 						ID:                         tntID,
-						Status:                     tenant.DeactivatedTenantStatus,
+						Status:                     schema.DeactivatedTenantStatus,
 						DistributionAccountAddress: &tntDistributionAccAddress,
 						DeletedAt:                  &deletedAt,
 					}, nil).
@@ -1258,16 +1287,16 @@ func Test_TenantHandler_Delete(t *testing.T) {
 				tntManagerMock.On("GetTenant", mock.Anything, &tenant.QueryParams{
 					Filters: map[tenant.FilterKey]interface{}{tenant.FilterKeyID: tntID},
 				}).
-					Return(&tenant.Tenant{ID: tntID, Status: tenant.DeactivatedTenantStatus, DistributionAccountAddress: &tntDistributionAccAddress}, nil).
+					Return(&schema.Tenant{ID: tntID, Status: schema.DeactivatedTenantStatus, DistributionAccountAddress: &tntDistributionAccAddress}, nil).
 					Once()
 				distAccResolver.On("HostDistributionAccount").Return(hostAccount).Once()
 				distAccResolver.On("DistributionAccount", mock.Anything, tntID).Return(tntDistributionAcc, nil).Once()
 				distAccSvc.On("GetBalances", mock.Anything, &tntDistributionAcc).
-					Return(map[data.Asset]float64{}, nil).Once()
+					Return(map[data.Asset]decimal.Decimal{}, nil).Once()
 				tntManagerMock.On("SoftDeleteTenantByID", mock.Anything, tntID).
-					Return(&tenant.Tenant{
+					Return(&schema.Tenant{
 						ID:                         tntID,
-						Status:                     tenant.DeactivatedTenantStatus,
+						Status:                     schema.DeactivatedTenantStatus,
 						DistributionAccountAddress: &tntDistributionAccAddress,
 						DeletedAt:                  &deletedAt,
 					}, nil).

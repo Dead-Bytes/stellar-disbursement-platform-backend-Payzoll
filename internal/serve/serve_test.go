@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stellar/go/clients/horizonclient"
+	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/network"
 	supporthttp "github.com/stellar/go/support/http"
 	"github.com/stellar/go/support/log"
@@ -25,7 +26,6 @@ import (
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/bridge"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/crashtracker"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/events"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/message"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/monitor"
 	monitorMocks "github.com/stellar/stellar-disbursement-platform-backend/internal/monitor/mocks"
@@ -68,21 +68,24 @@ func Test_Serve(t *testing.T) {
 
 	mockCrashTrackerClient := &crashtracker.MockCrashTrackerClient{}
 
+	testKP, err := keypair.Random()
+	require.NoError(t, err)
+
 	opts := ServeOptions{
-		CrashTrackerClient:              mockCrashTrackerClient,
-		MtnDBConnectionPool:             dbConnectionPool,
-		AdminDBConnectionPool:           dbConnectionPool,
-		EC256PrivateKey:                 privateKeyStr,
-		Environment:                     "test",
-		GitCommit:                       "1234567890abcdef",
-		Models:                          models,
-		Port:                            8000,
-		ResetTokenExpirationHours:       1,
-		SEP24JWTSecret:                  "jwt_secret_1234567890",
-		AnchorPlatformBasePlatformURL:   "https://test.com",
-		AnchorPlatformOutgoingJWTSecret: "jwt_secret_1234567890",
-		Version:                         "x.y.z",
-		NetworkPassphrase:               network.TestNetworkPassphrase,
+		CrashTrackerClient:        mockCrashTrackerClient,
+		MtnDBConnectionPool:       dbConnectionPool,
+		AdminDBConnectionPool:     dbConnectionPool,
+		EC256PrivateKey:           privateKeyStr,
+		Environment:               "test",
+		GitCommit:                 "1234567890abcdef",
+		Models:                    models,
+		Port:                      8000,
+		ResetTokenExpirationHours: 1,
+		SEP24JWTSecret:            "jwt_secret_1234567890",
+		Version:                   "x.y.z",
+		Sep10SigningPrivateKey:    testKP.Seed(),
+		Sep10SigningPublicKey:     testKP.Address(),
+		NetworkPassphrase:         network.TestNetworkPassphrase,
 	}
 
 	// Mock supportHTTPRun
@@ -173,24 +176,17 @@ func Test_handleHTTP_Health(t *testing.T) {
 	require.NoError(t, err)
 
 	mMonitorService := monitorMocks.NewMockMonitorService(t)
-	mLabels := monitor.HttpRequestLabels{
+	mLabels := monitor.HTTPRequestLabels{
 		Status: "200",
 		Route:  "/health",
 		Method: "GET",
+		CommonLabels: monitor.CommonLabels{
+			TenantName: "no_tenant",
+		},
 	}
 	mMonitorService.
-		On("MonitorHttpRequestDuration", mock.AnythingOfType("time.Duration"), mLabels).
+		On("MonitorHTTPRequestDuration", mock.AnythingOfType("time.Duration"), mLabels).
 		Return(nil).
-		Once()
-
-	producerMock := events.NewMockProducer(t)
-	producerMock.
-		On("Ping", mock.Anything).
-		Return(nil).
-		Once()
-	producerMock.
-		On("BrokerType").
-		Return(events.KafkaEventBrokerType).
 		Once()
 
 	handlerMux := handleHTTP(ServeOptions{
@@ -202,7 +198,6 @@ func Test_handleHTTP_Health(t *testing.T) {
 		SEP24JWTSecret:        "jwt_secret_1234567890",
 		Version:               "x.y.z",
 		tenantManager:         tenant.NewManager(tenant.WithDatabase(dbConnectionPool)),
-		EventProducer:         producerMock,
 		AdminDBConnectionPool: dbConnectionPool,
 	})
 
@@ -221,8 +216,7 @@ func Test_handleHTTP_Health(t *testing.T) {
 		"service_id": "serve",
 		"release_id": "1234567890abcdef",
 		"services": {
-			"database": "pass",
-			"kafka": "pass"
+			"database": "pass"
 		}
 	}`
 	assert.JSONEq(t, wantBody, string(body))
@@ -269,7 +263,7 @@ func getServeOptionsForTests(t *testing.T, dbConnectionPool db.DBConnectionPool)
 	t.Helper()
 
 	mMonitorService := monitorMocks.NewMockMonitorService(t)
-	mMonitorService.On("MonitorHttpRequestDuration", mock.AnythingOfType("time.Duration"), mock.Anything).Return(nil).Maybe()
+	mMonitorService.On("MonitorHTTPRequestDuration", mock.AnythingOfType("time.Duration"), mock.Anything).Return(nil).Maybe()
 
 	messengerClientMock := message.MessengerClientMock{}
 	messengerClientMock.On("SendMessage", mock.Anything, mock.Anything).Return(nil)
@@ -286,7 +280,7 @@ func getServeOptionsForTests(t *testing.T, dbConnectionPool db.DBConnectionPool)
 	mTenantManager := &tenant.TenantManagerMock{}
 	mTenantManager.
 		On("GetTenantByName", mock.Anything, "aid-org").
-		Return(&tenant.Tenant{ID: "tenant1"}, nil)
+		Return(&schema.Tenant{ID: "tenant1"}, nil)
 
 	mHorizonClient := &horizonclient.MockClient{}
 	mLedgerNumberTracker := preconditionsMocks.NewMockLedgerNumberTracker(t)
@@ -303,35 +297,28 @@ func getServeOptionsForTests(t *testing.T, dbConnectionPool db.DBConnectionPool)
 		Return(distAccount, nil).
 		Maybe()
 
-	producerMock := events.NewMockProducer(t)
-	producerMock.
-		On("Ping", mock.Anything).
-		Return(nil).
-		Maybe()
-	producerMock.
-		On("BrokerType").
-		Return(events.KafkaEventBrokerType).
-		Maybe()
+	testKP, err := keypair.Random()
+	require.NoError(t, err)
 
 	serveOptions := ServeOptions{
-		CrashTrackerClient:              crashTrackerClient,
-		MtnDBConnectionPool:             dbConnectionPool,
-		AdminDBConnectionPool:           dbConnectionPool,
-		EC256PrivateKey:                 privateKeyStr,
-		EmailMessengerClient:            &messengerClientMock,
-		Environment:                     "test",
-		GitCommit:                       "1234567890abcdef",
-		MonitorService:                  mMonitorService,
-		ResetTokenExpirationHours:       1,
-		SEP24JWTSecret:                  "jwt_secret_1234567890",
-		AnchorPlatformOutgoingJWTSecret: "jwt_secret_1234567890",
-		AnchorPlatformBasePlatformURL:   "https://test.com",
-		MessageDispatcher:               messageDispatcherMock,
-		Version:                         "x.y.z",
-		NetworkPassphrase:               network.TestNetworkPassphrase,
-		SubmitterEngine:                 submitterEngine,
-		EventProducer:                   producerMock,
-		BridgeService:                   bridge.NewMockService(t),
+		CrashTrackerClient:        crashTrackerClient,
+		MtnDBConnectionPool:       dbConnectionPool,
+		AdminDBConnectionPool:     dbConnectionPool,
+		EC256PrivateKey:           privateKeyStr,
+		EmailMessengerClient:      &messengerClientMock,
+		Environment:               "test",
+		GitCommit:                 "1234567890abcdef",
+		MonitorService:            mMonitorService,
+		ResetTokenExpirationHours: 1,
+		SEP24JWTSecret:            "jwt_secret_1234567890",
+		BaseURL:                   "https://test.com",
+		MessageDispatcher:         messageDispatcherMock,
+		Version:                   "x.y.z",
+		NetworkPassphrase:         network.TestNetworkPassphrase,
+		SubmitterEngine:           submitterEngine,
+		Sep10SigningPrivateKey:    testKP.Seed(),
+		Sep10SigningPublicKey:     testKP.Address(),
+		BridgeService:             bridge.NewMockService(t),
 	}
 	err = serveOptions.SetupDependencies()
 	require.NoError(t, err)
@@ -356,6 +343,9 @@ func Test_handleHTTP_unauthenticatedEndpoints(t *testing.T) {
 	}{
 		{http.MethodGet, "/organization/logo"},
 		{http.MethodGet, "/health"},
+		{http.MethodGet, "/sep24/info"},
+		{http.MethodGet, "/sep10/auth"},
+		{http.MethodPost, "/sep10/auth"},
 		{http.MethodGet, "/.well-known/stellar.toml"},
 		{http.MethodPost, "/login"},
 		{http.MethodPost, "/mfa"},
@@ -366,7 +356,6 @@ func Test_handleHTTP_unauthenticatedEndpoints(t *testing.T) {
 	for _, endpoint := range unauthenticatedEndpoints {
 		t.Run(fmt.Sprintf("%s %s", endpoint.method, endpoint.path), func(t *testing.T) {
 			req := httptest.NewRequest(endpoint.method, endpoint.path, nil)
-			req.Header.Set("SDP-Tenant-Name", "aid-org")
 
 			w := httptest.NewRecorder()
 			handlerMux.ServeHTTP(w, req)

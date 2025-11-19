@@ -28,7 +28,7 @@ import (
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
 	"github.com/stellar/stellar-disbursement-platform-backend/db/dbtest"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/middleware"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/serve/publicfiles"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/transactionsubmission/engine/signing"
 	sigMocks "github.com/stellar/stellar-disbursement-platform-backend/internal/transactionsubmission/engine/signing/mocks"
@@ -348,6 +348,54 @@ func Test_ProfileHandler_PatchOrganizationProfile_Failures(t *testing.T) {
 				}
 			}`,
 		},
+		{
+			name:  "returns BadRequest when receiver_registration_message_template exceeds 255 characters",
+			token: "token",
+			mockAuthManagerFn: func(authManagerMock *auth.AuthManagerMock) {
+				authManagerMock.
+					On("GetUser", mock.Anything, "token").
+					Return(user, nil).
+					Once()
+			},
+			getRequestFn: func(t *testing.T, ctx context.Context) *http.Request {
+				reqBody := `{
+					"receiver_registration_message_template": "This is a very long test string designed to reach exactly two hundred and fifty six characters in length, which is one more than the common maximum of two hundred and fifty five, so it can be used to test proper validation, truncation, or error handling logic correctly."
+				}`
+				return createOrganizationProfileMultipartRequest(t, ctx, url, "", "", reqBody, new(bytes.Buffer))
+			},
+			networkType:    utils.PubnetNetworkType,
+			wantStatusCode: http.StatusBadRequest,
+			wantRespBody: `{
+				"error": "The request was invalid in some way.",
+				"extras": {
+					"receiver_registration_message_template": "receiver_registration_message_template cannot exceed 255 characters"
+				}
+			}`,
+		},
+		{
+			name:  "returns BadRequest when organization_name exceeds 64 characters",
+			token: "token",
+			mockAuthManagerFn: func(authManagerMock *auth.AuthManagerMock) {
+				authManagerMock.
+					On("GetUser", mock.Anything, "token").
+					Return(user, nil).
+					Once()
+			},
+			getRequestFn: func(t *testing.T, ctx context.Context) *http.Request {
+				reqBody := `{
+					"organization_name": "This organization name is way too long and exceeds the maximum length of 64 characters"
+				}`
+				return createOrganizationProfileMultipartRequest(t, ctx, url, "", "", reqBody, new(bytes.Buffer))
+			},
+			networkType:    utils.PubnetNetworkType,
+			wantStatusCode: http.StatusBadRequest,
+			wantRespBody: `{
+				"error": "The request was invalid in some way.",
+				"extras": {
+					"organization_name": "organization_name cannot exceed 64 characters"
+				}
+			}`,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -355,7 +403,7 @@ func Test_ProfileHandler_PatchOrganizationProfile_Failures(t *testing.T) {
 			// Inject authenticated token into context:
 			ctx := context.Background()
 			if tc.token != "" {
-				ctx = context.WithValue(ctx, middleware.TokenContextKey, tc.token)
+				ctx = sdpcontext.SetTokenInContext(ctx, tc.token)
 			}
 
 			// Setup password validator
@@ -561,7 +609,7 @@ func Test_ProfileHandler_PatchOrganizationProfile_Successful(t *testing.T) {
 			// Inject authenticated token into context:
 			ctx := context.Background()
 			if tc.token != "" {
-				ctx = context.WithValue(ctx, middleware.TokenContextKey, tc.token)
+				ctx = sdpcontext.SetTokenInContext(ctx, tc.token)
 			}
 
 			// Assert DB before
@@ -749,7 +797,7 @@ func Test_ProfileHandler_PatchUserProfile(t *testing.T) {
 			// Inject authenticated token into context:
 			ctx := context.Background()
 			if tc.token != "" {
-				ctx = context.WithValue(ctx, middleware.TokenContextKey, tc.token)
+				ctx = sdpcontext.SetTokenInContext(ctx, tc.token)
 			}
 
 			// Setup password validator
@@ -930,7 +978,7 @@ func Test_ProfileHandler_PatchUserPassword(t *testing.T) {
 			// Inject authenticated token into context:
 			ctx := context.Background()
 			if tc.token != "" {
-				ctx = context.WithValue(ctx, middleware.TokenContextKey, tc.token)
+				ctx = sdpcontext.SetTokenInContext(ctx, tc.token)
 			}
 
 			// Setup password validator
@@ -1008,7 +1056,7 @@ func Test_ProfileHandler_GetProfile(t *testing.T) {
 
 	t.Run("returns Unauthorized when AuthManager fails with ErrInvalidToken", func(t *testing.T) {
 		token := "mytoken"
-		ctx = context.WithValue(ctx, middleware.TokenContextKey, token)
+		ctx = sdpcontext.SetTokenInContext(ctx, token)
 
 		expectedErr := auth.ErrInvalidToken
 		authManagerMock.
@@ -1039,7 +1087,7 @@ func Test_ProfileHandler_GetProfile(t *testing.T) {
 
 	t.Run("returns BadRequest when user is not found", func(t *testing.T) {
 		token := "mytoken"
-		ctx = context.WithValue(ctx, middleware.TokenContextKey, token)
+		ctx = sdpcontext.SetTokenInContext(ctx, token)
 		expectedErr := fmt.Errorf("error getting user ID %s: %w", "user-id", auth.ErrUserNotFound)
 
 		authManagerMock.
@@ -1070,7 +1118,7 @@ func Test_ProfileHandler_GetProfile(t *testing.T) {
 
 	t.Run("returns InternalServerError when AuthManager fails", func(t *testing.T) {
 		token := "mytoken"
-		ctx = context.WithValue(ctx, middleware.TokenContextKey, token)
+		ctx = sdpcontext.SetTokenInContext(ctx, token)
 
 		expectedErr := errors.New("error getting user ID user-id: unexpected error")
 		authManagerMock.
@@ -1101,7 +1149,7 @@ func Test_ProfileHandler_GetProfile(t *testing.T) {
 
 	t.Run("returns the profile info successfully", func(t *testing.T) {
 		token := "mytoken"
-		ctx = context.WithValue(ctx, middleware.TokenContextKey, token)
+		ctx = sdpcontext.SetTokenInContext(ctx, token)
 
 		u := &auth.User{
 			ID:        "user-id",
@@ -1254,7 +1302,9 @@ func Test_ProfileHandler_GetOrganizationInfo(t *testing.T) {
 				"privacy_policy_link": null,
 				"receiver_invitation_resend_interval_days": 0,
 				"payment_cancellation_period_days": 0,
-				"message_channel_priority": ["SMS", "EMAIL"]
+				"message_channel_priority": ["SMS", "EMAIL"],
+				"mfa_disabled": null,
+				"captcha_disabled": null
 			}
 		`, *currentTenant.BaseURL, *currentTenant.BaseURL, newDistAccountJSON(t, *currentTenant.DistributionAccountAddress), *currentTenant.DistributionAccountAddress)
 
@@ -1294,7 +1344,9 @@ func Test_ProfileHandler_GetOrganizationInfo(t *testing.T) {
 				"receiver_invitation_resend_interval_days": 0,
 				"payment_cancellation_period_days": 0,
 				"privacy_policy_link": null,
-				"message_channel_priority": ["SMS", "EMAIL"]
+				"message_channel_priority": ["SMS", "EMAIL"],
+				"mfa_disabled": null,
+				"captcha_disabled": null
 			}
 		`, *currentTenant.BaseURL, *currentTenant.BaseURL, newDistAccountJSON(t, *currentTenant.DistributionAccountAddress), *currentTenant.DistributionAccountAddress)
 
@@ -1333,7 +1385,9 @@ func Test_ProfileHandler_GetOrganizationInfo(t *testing.T) {
 				"receiver_invitation_resend_interval_days": 0,
 				"payment_cancellation_period_days": 0,
 				"privacy_policy_link": null,
-				"message_channel_priority": ["SMS", "EMAIL"]
+				"message_channel_priority": ["SMS", "EMAIL"],
+				"mfa_disabled": null,
+				"captcha_disabled": null
 			}
 		`, *currentTenant.BaseURL, *currentTenant.BaseURL, newDistAccountJSON(t, *currentTenant.DistributionAccountAddress), *currentTenant.DistributionAccountAddress)
 
@@ -1374,7 +1428,9 @@ func Test_ProfileHandler_GetOrganizationInfo(t *testing.T) {
 				"receiver_invitation_resend_interval_days": 2,
 				"payment_cancellation_period_days": 0,
 				"privacy_policy_link": null,
-				"message_channel_priority": ["SMS", "EMAIL"]
+				"message_channel_priority": ["SMS", "EMAIL"],
+				"mfa_disabled": null,
+				"captcha_disabled": null
 			}
 		`, *currentTenant.BaseURL, *currentTenant.BaseURL, newDistAccountJSON(t, *currentTenant.DistributionAccountAddress), *currentTenant.DistributionAccountAddress)
 
@@ -1415,7 +1471,9 @@ func Test_ProfileHandler_GetOrganizationInfo(t *testing.T) {
 				"receiver_invitation_resend_interval_days": 0,
 				"payment_cancellation_period_days": 5,
 				"privacy_policy_link": null,
-				"message_channel_priority": ["SMS", "EMAIL"]
+				"message_channel_priority": ["SMS", "EMAIL"],
+				"mfa_disabled": null,
+				"captcha_disabled": null
 			}
 		`, *currentTenant.BaseURL, *currentTenant.BaseURL, newDistAccountJSON(t, *currentTenant.DistributionAccountAddress), *currentTenant.DistributionAccountAddress)
 
@@ -1426,7 +1484,7 @@ func Test_ProfileHandler_GetOrganizationInfo(t *testing.T) {
 	t.Run("returns the custom privacy_policy_link", func(t *testing.T) {
 		resetOrganizationInfo(t, ctx, dbConnectionPool)
 
-		var privacyPolicyLink string = "https://example.com/privacy-policy"
+		privacyPolicyLink := "https://example.com/privacy-policy"
 		err := models.Organizations.Update(ctx, &data.OrganizationUpdate{
 			PrivacyPolicyLink: &privacyPolicyLink,
 		})
@@ -1456,7 +1514,9 @@ func Test_ProfileHandler_GetOrganizationInfo(t *testing.T) {
 				"receiver_invitation_resend_interval_days": 0,
 				"payment_cancellation_period_days": 0,
 				"privacy_policy_link": "https://example.com/privacy-policy",
-				"message_channel_priority": ["SMS", "EMAIL"]
+				"message_channel_priority": ["SMS", "EMAIL"],
+				"mfa_disabled": null,
+				"captcha_disabled": null
 			}
 		`, *currentTenant.BaseURL, *currentTenant.BaseURL, newDistAccountJSON(t, *currentTenant.DistributionAccountAddress), *currentTenant.DistributionAccountAddress)
 

@@ -13,12 +13,13 @@ type GlobalOptionsType struct {
 	Version           string
 	GitCommit         string
 	DatabaseURL       string
+	DBPool            DBPoolOptions
 	BaseURL           string
 	SDPUIBaseURL      string
 	NetworkPassphrase string
 }
 
-// populateConfigOptions populates the CrastTrackerOptions from the global options.
+// PopulateCrashTrackerOptions populates the CrastTrackerOptions from the global options.
 func (g GlobalOptionsType) PopulateCrashTrackerOptions(crashTrackerOptions *crashtracker.CrashTrackerOptions) {
 	if crashTrackerOptions.CrashTrackerType == crashtracker.CrashTrackerTypeSentry {
 		crashTrackerOptions.SentryDSN = g.SentryDSN

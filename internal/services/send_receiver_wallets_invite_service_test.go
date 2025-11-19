@@ -17,10 +17,10 @@ import (
 	"github.com/stellar/stellar-disbursement-platform-backend/db/dbtest"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/crashtracker"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
-	"github.com/stellar/stellar-disbursement-platform-backend/internal/events/schemas"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/message"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/utils"
-	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
+	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
 )
 
 func Test_GetSignedRegistrationLink_SchemelessDeepLink(t *testing.T) {
@@ -60,8 +60,8 @@ func Test_SendReceiverWalletInviteService_SendInvite(t *testing.T) {
 	defer dbConnectionPool.Close()
 
 	tenantBaseURL := "http://localhost:8000"
-	tenantInfo := &tenant.Tenant{ID: uuid.NewString(), Name: "TestTenant", BaseURL: &tenantBaseURL}
-	ctx := tenant.SaveTenantInContext(context.Background(), tenantInfo)
+	tenantInfo := &schema.Tenant{ID: uuid.NewString(), Name: "TestTenant", BaseURL: &tenantBaseURL}
+	ctx := sdpcontext.SetTenantInContext(context.Background(), tenantInfo)
 
 	stellarSecretKey := "SBUSPEKAZKLZSWHRSJ2HWDZUK6I3IVDUWA7JJZSGBLZ2WZIUJI7FPNB5"
 	messageDispatcherMock := message.NewMockMessageDispatcher(t)
@@ -159,18 +159,28 @@ func Test_SendReceiverWalletInviteService_SendInvite(t *testing.T) {
 		mockErr := errors.New("unexpected error")
 		messageDispatcherMock.
 			On("SendMessage", mock.Anything, message.Message{
+				Type:          message.MessageTypeReceiverInvitation,
 				ToPhoneNumber: receiver1.PhoneNumber,
 				ToEmail:       receiver1.Email,
 				Body:          contentWallet1,
 				Title:         titleWallet1,
+				TemplateVariables: map[message.TemplateVariable]string{
+					message.TemplateVarOrgName:                  walletDeepLink1.OrganizationName,
+					message.TemplateVarReceiverRegistrationLink: deepLink1,
+				},
 			}, []message.MessageChannel{message.MessageChannelSMS, message.MessageChannelEmail}).
 			Return(message.MessengerTypeTwilioSMS, errors.New("unexpected error")).
 			Once().
 			On("SendMessage", mock.Anything, message.Message{
+				Type:          message.MessageTypeReceiverInvitation,
 				ToPhoneNumber: receiver2.PhoneNumber,
 				ToEmail:       receiver2.Email,
 				Body:          contentWallet2,
 				Title:         titleWallet2,
+				TemplateVariables: map[message.TemplateVariable]string{
+					message.TemplateVarOrgName:                  walletDeepLink2.OrganizationName,
+					message.TemplateVarReceiverRegistrationLink: deepLink2,
+				},
 			}, []message.MessageChannel{message.MessageChannelSMS, message.MessageChannelEmail}).
 			Return(message.MessengerTypeTwilioSMS, nil).
 			Once()
@@ -181,16 +191,7 @@ func Test_SendReceiverWalletInviteService_SendInvite(t *testing.T) {
 		)
 		mockCrashTrackerClient.On("LogAndReportErrors", ctx, mockErr, mockMsg).Once()
 
-		reqs := []schemas.EventReceiverWalletInvitationData{
-			{
-				ReceiverWalletID: rec1RW.ID,
-			},
-			{
-				ReceiverWalletID: rec2RW.ID,
-			},
-		}
-
-		err = s.SendInvite(ctx, reqs...)
+		err = s.SendInvite(ctx)
 		require.NoError(t, err)
 
 		receivers, err := models.ReceiverWallet.GetByReceiverIDsAndWalletID(ctx, dbConnectionPool, []string{receiver1.ID}, wallet1.ID)
@@ -304,29 +305,30 @@ func Test_SendReceiverWalletInviteService_SendInvite(t *testing.T) {
 
 		messageDispatcherMock.
 			On("SendMessage", mock.Anything, message.Message{
+				Type:          message.MessageTypeReceiverInvitation,
 				ToPhoneNumber: receiverPhoneOnly.PhoneNumber,
 				Body:          contentWallet1,
+				TemplateVariables: map[message.TemplateVariable]string{
+					message.TemplateVarOrgName:                  walletDeepLink1.OrganizationName,
+					message.TemplateVarReceiverRegistrationLink: deepLink1,
+				},
 			}, []message.MessageChannel{message.MessageChannelSMS, message.MessageChannelEmail}).
 			Return(message.MessengerTypeTwilioSMS, nil).
 			Once().
 			On("SendMessage", mock.Anything, message.Message{
+				Type:    message.MessageTypeReceiverInvitation,
 				ToEmail: receiverEmailOnly.Email,
 				Body:    contentWallet2,
 				Title:   titleWallet2,
+				TemplateVariables: map[message.TemplateVariable]string{
+					message.TemplateVarOrgName:                  walletDeepLink2.OrganizationName,
+					message.TemplateVarReceiverRegistrationLink: deepLink2,
+				},
 			}, []message.MessageChannel{message.MessageChannelSMS, message.MessageChannelEmail}).
 			Return(message.MessengerTypeAWSEmail, nil).
 			Once()
 
-		reqs := []schemas.EventReceiverWalletInvitationData{
-			{
-				ReceiverWalletID: rec1RW.ID,
-			},
-			{
-				ReceiverWalletID: rec2RW.ID,
-			},
-		}
-
-		err = s.SendInvite(ctx, reqs...)
+		err = s.SendInvite(ctx)
 		require.NoError(t, err)
 
 		receivers, err := models.ReceiverWallet.GetByReceiverIDsAndWalletID(ctx, dbConnectionPool, []string{receiverPhoneOnly.ID}, wallet1.ID)
@@ -442,32 +444,33 @@ func Test_SendReceiverWalletInviteService_SendInvite(t *testing.T) {
 
 		messageDispatcherMock.
 			On("SendMessage", mock.Anything, message.Message{
+				Type:          message.MessageTypeReceiverInvitation,
 				ToPhoneNumber: receiver1.PhoneNumber,
 				ToEmail:       receiver1.Email,
 				Body:          contentWallet1,
 				Title:         titleWallet1,
+				TemplateVariables: map[message.TemplateVariable]string{
+					message.TemplateVarOrgName:                  walletDeepLink1.OrganizationName,
+					message.TemplateVarReceiverRegistrationLink: deepLink1,
+				},
 			}, []message.MessageChannel{message.MessageChannelSMS, message.MessageChannelEmail}).
 			Return(message.MessengerTypeTwilioSMS, nil).
 			Once().
 			On("SendMessage", mock.Anything, message.Message{
+				Type:          message.MessageTypeReceiverInvitation,
 				ToPhoneNumber: receiver2.PhoneNumber,
 				ToEmail:       receiver2.Email,
 				Body:          contentWallet2,
 				Title:         titleWallet2,
+				TemplateVariables: map[message.TemplateVariable]string{
+					message.TemplateVarOrgName:                  walletDeepLink2.OrganizationName,
+					message.TemplateVarReceiverRegistrationLink: deepLink2,
+				},
 			}, []message.MessageChannel{message.MessageChannelSMS, message.MessageChannelEmail}).
 			Return(message.MessengerTypeTwilioSMS, nil).
 			Once()
 
-		reqs := []schemas.EventReceiverWalletInvitationData{
-			{
-				ReceiverWalletID: rec1RW.ID,
-			},
-			{
-				ReceiverWalletID: rec2RW.ID,
-			},
-		}
-
-		err = s.SendInvite(ctx, reqs...)
+		err = s.SendInvite(ctx)
 		require.NoError(t, err)
 
 		receivers, err := models.ReceiverWallet.GetByReceiverIDsAndWalletID(ctx, dbConnectionPool, []string{receiver1.ID}, wallet1.ID)
@@ -552,13 +555,7 @@ func Test_SendReceiverWalletInviteService_SendInvite(t *testing.T) {
 		err = models.Organizations.Update(ctx, &data.OrganizationUpdate{ReceiverInvitationResendIntervalDays: new(int64)})
 		require.NoError(t, err)
 
-		reqs := []schemas.EventReceiverWalletInvitationData{
-			{
-				ReceiverWalletID: rec1RW.ID,
-			},
-		}
-
-		err = s.SendInvite(ctx, reqs...)
+		err = s.SendInvite(ctx)
 		require.NoError(t, err)
 
 		receivers, err := models.ReceiverWallet.GetByReceiverIDsAndWalletID(ctx, dbConnectionPool, []string{receiver1.ID}, wallet1.ID)
@@ -632,13 +629,7 @@ func Test_SendReceiverWalletInviteService_SendInvite(t *testing.T) {
 			UpdatedAt:        time.Now().AddDate(0, 0, int(smsResendInterval*3)),
 		})
 
-		reqs := []schemas.EventReceiverWalletInvitationData{
-			{
-				ReceiverWalletID: rec1RW.ID,
-			},
-		}
-
-		err = s.SendInvite(ctx, reqs...)
+		err = s.SendInvite(ctx)
 		require.NoError(t, err)
 
 		receivers, err := models.ReceiverWallet.GetByReceiverIDsAndWalletID(ctx, dbConnectionPool, []string{receiver1.ID}, wallet1.ID)
@@ -679,13 +670,7 @@ func Test_SendReceiverWalletInviteService_SendInvite(t *testing.T) {
 		err = models.Organizations.Update(ctx, &data.OrganizationUpdate{ReceiverInvitationResendIntervalDays: &smsResendInterval})
 		require.NoError(t, err)
 
-		reqs := []schemas.EventReceiverWalletInvitationData{
-			{
-				ReceiverWalletID: rec1RW.ID,
-			},
-		}
-
-		err = s.SendInvite(ctx, reqs...)
+		err = s.SendInvite(ctx)
 		require.NoError(t, err)
 
 		receivers, err := models.ReceiverWallet.GetByReceiverIDsAndWalletID(ctx, dbConnectionPool, []string{receiver1.ID}, wallet1.ID)
@@ -740,21 +725,20 @@ func Test_SendReceiverWalletInviteService_SendInvite(t *testing.T) {
 
 		messageDispatcherMock.
 			On("SendMessage", mock.Anything, message.Message{
+				Type:          message.MessageTypeReceiverInvitation,
 				ToPhoneNumber: receiver1.PhoneNumber,
 				ToEmail:       receiver1.Email,
 				Body:          contentWallet1,
 				Title:         titleWallet1,
+				TemplateVariables: map[message.TemplateVariable]string{
+					message.TemplateVarOrgName:                  walletDeepLink1.OrganizationName,
+					message.TemplateVarReceiverRegistrationLink: deepLink1,
+				},
 			}, []message.MessageChannel{message.MessageChannelSMS, message.MessageChannelEmail}).
 			Return(message.MessengerTypeTwilioSMS, nil).
 			Once()
 
-		reqs := []schemas.EventReceiverWalletInvitationData{
-			{
-				ReceiverWalletID: rec1RW.ID,
-			},
-		}
-
-		err = s.SendInvite(ctx, reqs...)
+		err = s.SendInvite(ctx)
 		require.NoError(t, err)
 
 		receivers, err := models.ReceiverWallet.GetByReceiverIDsAndWalletID(ctx, dbConnectionPool, []string{receiver1.ID}, wallet1.ID)
@@ -860,32 +844,33 @@ func Test_SendReceiverWalletInviteService_SendInvite(t *testing.T) {
 
 		messageDispatcherMock.
 			On("SendMessage", mock.Anything, message.Message{
+				Type:          message.MessageTypeReceiverInvitation,
 				ToPhoneNumber: receiver1.PhoneNumber,
 				ToEmail:       receiver1.Email,
 				Body:          contentDisbursement3,
 				Title:         titleDisbursement3,
+				TemplateVariables: map[message.TemplateVariable]string{
+					message.TemplateVarOrgName:                  walletDeepLink1.OrganizationName,
+					message.TemplateVarReceiverRegistrationLink: deepLink1,
+				},
 			}, []message.MessageChannel{message.MessageChannelSMS, message.MessageChannelEmail}).
 			Return(message.MessengerTypeTwilioSMS, nil).
 			Once().
 			On("SendMessage", mock.Anything, message.Message{
+				Type:          message.MessageTypeReceiverInvitation,
 				ToPhoneNumber: receiver2.PhoneNumber,
 				ToEmail:       receiver2.Email,
 				Body:          contentDisbursement4,
 				Title:         titleDisbursement4,
+				TemplateVariables: map[message.TemplateVariable]string{
+					message.TemplateVarOrgName:                  walletDeepLink2.OrganizationName,
+					message.TemplateVarReceiverRegistrationLink: deepLink2,
+				},
 			}, []message.MessageChannel{message.MessageChannelSMS, message.MessageChannelEmail}).
 			Return(message.MessengerTypeTwilioSMS, nil).
 			Once()
 
-		reqs := []schemas.EventReceiverWalletInvitationData{
-			{
-				ReceiverWalletID: rec1RW.ID,
-			},
-			{
-				ReceiverWalletID: rec2RW.ID,
-			},
-		}
-
-		err = s.SendInvite(ctx, reqs...)
+		err = s.SendInvite(ctx)
 		require.NoError(t, err)
 
 		receivers, err := models.ReceiverWallet.GetByReceiverIDsAndWalletID(ctx, dbConnectionPool, []string{receiver1.ID}, wallet1.ID)
@@ -993,21 +978,20 @@ func Test_SendReceiverWalletInviteService_SendInvite(t *testing.T) {
 
 		messageDispatcherMock.
 			On("SendMessage", mock.Anything, message.Message{
+				Type:          message.MessageTypeReceiverInvitation,
 				ToPhoneNumber: receiver1.PhoneNumber,
 				ToEmail:       receiver1.Email,
 				Body:          contentDisbursement,
 				Title:         titleDisbursement,
+				TemplateVariables: map[message.TemplateVariable]string{
+					message.TemplateVarOrgName:                  walletDeepLink1.OrganizationName,
+					message.TemplateVarReceiverRegistrationLink: deepLink1,
+				},
 			}, []message.MessageChannel{message.MessageChannelSMS, message.MessageChannelEmail}).
 			Return(message.MessengerTypeTwilioSMS, nil).
 			Once()
 
-		reqs := []schemas.EventReceiverWalletInvitationData{
-			{
-				ReceiverWalletID: rec1RW.ID,
-			},
-		}
-
-		err = s.SendInvite(ctx, reqs...)
+		err = s.SendInvite(ctx)
 		require.NoError(t, err)
 
 		receivers, err := models.ReceiverWallet.GetByReceiverIDsAndWalletID(ctx, dbConnectionPool, []string{receiver1.ID}, wallet1.ID)
@@ -1709,5 +1693,132 @@ func Test_WalletDeepLink_GetSignedRegistrationLink(t *testing.T) {
 		isValid, err := utils.VerifySignedURL(actual, stellarPublicKey)
 		require.NoError(t, err)
 		require.True(t, isValid)
+	})
+}
+
+func TestSendReceiverWalletInviteService_GetRegistrationLink(t *testing.T) {
+	ctx := context.Background()
+	stellarSecretKey := "SBUSPEKAZKLZSWHRSJ2HWDZUK6I3IVDUWA7JJZSGBLZ2WZIUJI7FPNB5"
+
+	t.Run("successful registration link without shortener", func(t *testing.T) {
+		dbt := dbtest.Open(t)
+		defer dbt.Close()
+
+		dbConnectionPool, err := db.OpenDBConnectionPool(dbt.DSN)
+		require.NoError(t, err)
+		defer dbConnectionPool.Close()
+
+		models, err := data.NewModels(dbConnectionPool)
+		require.NoError(t, err)
+
+		wdl := WalletDeepLink{
+			DeepLink:         "wallet://sdp",
+			TenantBaseURL:    "https://tenant.example.com",
+			OrganizationName: "Test Org",
+			AssetCode:        "USDC",
+			AssetIssuer:      "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+		}
+
+		service := SendReceiverWalletInviteService{
+			Models:                 models,
+			sep10SigningPrivateKey: stellarSecretKey,
+		}
+
+		link, err := service.GetRegistrationLink(ctx, wdl, false)
+		require.NoError(t, err)
+		assert.Contains(t, link, "wallet://sdp")
+		assert.Contains(t, link, "asset=USDC")
+		assert.Contains(t, link, "signature=")
+	})
+
+	t.Run("successful registration link with shortener", func(t *testing.T) {
+		dbt := dbtest.Open(t)
+		defer dbt.Close()
+
+		dbConnectionPool, err := db.OpenDBConnectionPool(dbt.DSN)
+		require.NoError(t, err)
+		defer dbConnectionPool.Close()
+
+		models, err := data.NewModels(dbConnectionPool)
+		require.NoError(t, err)
+
+		wdl := WalletDeepLink{
+			DeepLink:         "wallet://sdp",
+			TenantBaseURL:    "https://tenant.example.com",
+			OrganizationName: "Test Org",
+			AssetCode:        "USDC",
+			AssetIssuer:      "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+		}
+
+		service := SendReceiverWalletInviteService{
+			Models:                 models,
+			sep10SigningPrivateKey: stellarSecretKey,
+		}
+
+		link, err := service.GetRegistrationLink(ctx, wdl, true)
+		require.NoError(t, err)
+		assert.Contains(t, link, "https://tenant.example.com/r/")
+		assert.NotContains(t, link, "wallet://sdp")
+	})
+
+	t.Run("error with invalid signing key", func(t *testing.T) {
+		dbt := dbtest.Open(t)
+		defer dbt.Close()
+
+		dbConnectionPool, err := db.OpenDBConnectionPool(dbt.DSN)
+		require.NoError(t, err)
+		defer dbConnectionPool.Close()
+
+		models, err := data.NewModels(dbConnectionPool)
+		require.NoError(t, err)
+
+		wdl := WalletDeepLink{
+			DeepLink:         "wallet://sdp",
+			TenantBaseURL:    "https://tenant.example.com",
+			OrganizationName: "Test Org",
+			AssetCode:        "USDC",
+			AssetIssuer:      "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+		}
+
+		service := SendReceiverWalletInviteService{
+			Models:                 models,
+			sep10SigningPrivateKey: "invalid-key",
+		}
+
+		link, err := service.GetRegistrationLink(ctx, wdl, false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "getting signed registration link")
+		assert.Empty(t, link)
+	})
+
+	t.Run("native asset without shortener", func(t *testing.T) {
+		dbt := dbtest.Open(t)
+		defer dbt.Close()
+
+		dbConnectionPool, err := db.OpenDBConnectionPool(dbt.DSN)
+		require.NoError(t, err)
+		defer dbConnectionPool.Close()
+
+		models, err := data.NewModels(dbConnectionPool)
+		require.NoError(t, err)
+
+		wdl := WalletDeepLink{
+			DeepLink:         "wallet://sdp",
+			TenantBaseURL:    "https://tenant.example.com",
+			OrganizationName: "Test Org",
+			AssetCode:        "XLM",
+			AssetIssuer:      "",
+		}
+
+		service := SendReceiverWalletInviteService{
+			Models:                 models,
+			sep10SigningPrivateKey: stellarSecretKey,
+		}
+
+		link, err := service.GetRegistrationLink(ctx, wdl, false)
+		require.NoError(t, err)
+		assert.Contains(t, link, "wallet://sdp")
+		assert.Contains(t, link, "asset=native")
+		assert.Contains(t, link, "signature=")
 	})
 }

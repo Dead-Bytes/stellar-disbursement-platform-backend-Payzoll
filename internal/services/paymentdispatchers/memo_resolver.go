@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/stellar/go/strkey"
+
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
 	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
 	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
@@ -18,6 +20,10 @@ type MemoResolver struct {
 }
 
 func (m *MemoResolver) GetMemo(ctx context.Context, receiverWallet data.ReceiverWallet) (schema.Memo, error) {
+	if strkey.IsValidContractAddress(receiverWallet.StellarAddress) {
+		return schema.Memo{}, nil
+	}
+
 	if receiverWallet.StellarMemo != "" {
 		memoValue := receiverWallet.StellarMemo
 		memoType := receiverWallet.StellarMemoType
@@ -36,7 +42,11 @@ func (m *MemoResolver) GetMemo(ctx context.Context, receiverWallet data.Receiver
 		return schema.Memo{}, nil
 	}
 
-	return tenant.GenerateMemoForTenant(ctx)
+	tenantMemo, err := tenant.GenerateMemoForTenant(ctx)
+	if err != nil {
+		return schema.Memo{}, fmt.Errorf("generating tenant memo: %w", err)
+	}
+	return tenantMemo, nil
 }
 
 var _ MemoResolverInterface = (*MemoResolver)(nil)

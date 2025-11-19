@@ -14,6 +14,7 @@ import (
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
 	"github.com/stellar/stellar-disbursement-platform-backend/db/dbtest"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
 )
 
 func Test_APIKeyOrJWTAuthenticate_SuccessfulAPIKey(t *testing.T) {
@@ -29,7 +30,8 @@ func Test_APIKeyOrJWTAuthenticate_SuccessfulAPIKey(t *testing.T) {
 
 	var userID string
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userID = r.Context().Value(UserIDContextKey).(string)
+		userID, err = sdpcontext.GetUserIDFromContext(r.Context())
+		require.NoError(t, err)
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -85,7 +87,7 @@ func Test_APIKeyOrJWTAuthenticate_IPRestriction(t *testing.T) {
 	require.NoError(t, err)
 
 	r := chi.NewRouter()
-	r.Use(APIKeyOrJWTAuthenticate(apiKeyModel, jwtAuthWithID("jwt-user")))
+	r.Use(APIKeyOrJWTAuthenticate(apiKeyModel, jwtAuthWithID("user")))
 	r.Get("/test", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -105,8 +107,10 @@ func Test_APIKeyOrJWTAuthenticate_JWTFallback(t *testing.T) {
 
 	// handler echoes the user ID from context
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.Context().Value(UserIDContextKey).(string)
-		_, _ = w.Write([]byte(id))
+		id, err := sdpcontext.GetUserIDFromContext(r.Context())
+		require.NoError(t, err)
+		_, err = w.Write([]byte(id))
+		require.NoError(t, err)
 	})
 
 	// JWT path sets id to 'jwt-user'
@@ -139,7 +143,7 @@ func setupAPIKeyModel(t *testing.T) *data.APIKeyModel {
 func jwtAuthWithID(id string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), UserIDContextKey, id)
+			ctx := sdpcontext.SetUserIDInContext(r.Context(), id)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

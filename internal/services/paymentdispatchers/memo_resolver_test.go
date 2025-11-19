@@ -2,17 +2,19 @@ package paymentdispatchers
 
 import (
 	"context"
+	"crypto/sha256"
 	"testing"
 
+	"github.com/stellar/go/strkey"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stellar/stellar-disbursement-platform-backend/db"
 	"github.com/stellar/stellar-disbursement-platform-backend/db/dbtest"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/data"
+	"github.com/stellar/stellar-disbursement-platform-backend/internal/sdpcontext"
 	"github.com/stellar/stellar-disbursement-platform-backend/internal/utils"
 	"github.com/stellar/stellar-disbursement-platform-backend/pkg/schema"
-	"github.com/stellar/stellar-disbursement-platform-backend/stellar-multitenant/pkg/tenant"
 )
 
 func Test_MemoResolver_GetMemo(t *testing.T) {
@@ -22,7 +24,7 @@ func Test_MemoResolver_GetMemo(t *testing.T) {
 	require.NoError(t, err)
 	defer dbConnectionPool.Close()
 
-	tnt := tenant.Tenant{
+	tnt := schema.Tenant{
 		ID:      "tenant-id",
 		BaseURL: utils.Ptr("https://example.com"),
 	}
@@ -119,7 +121,7 @@ func Test_MemoResolver_GetMemo(t *testing.T) {
 			name: "🟢 return tenant memo when enabled",
 			getCtxFn: func(t *testing.T) context.Context {
 				ctx := context.Background()
-				return tenant.SaveTenantInContext(ctx, &tnt)
+				return sdpcontext.SetTenantInContext(ctx, &tnt)
 			},
 			receiverWallet: data.ReceiverWallet{},
 			orgMemoEnabled: true,
@@ -127,6 +129,21 @@ func Test_MemoResolver_GetMemo(t *testing.T) {
 				Value: "sdp-100680ad546c",
 				Type:  schema.MemoTypeText,
 			},
+			wantErrContains: "",
+		},
+		{
+			name: "🟢 skip memo for contract accounts",
+			getCtxFn: func(t *testing.T) context.Context {
+				ctx := context.Background()
+				return sdpcontext.SetTenantInContext(ctx, &tnt)
+			},
+			receiverWallet: data.ReceiverWallet{
+				StellarAddress:  generateContractAddress(t),
+				StellarMemo:     "123456",
+				StellarMemoType: schema.MemoTypeID,
+			},
+			orgMemoEnabled:  true,
+			expectedMemo:    schema.Memo{},
 			wantErrContains: "",
 		},
 	}
@@ -152,4 +169,12 @@ func Test_MemoResolver_GetMemo(t *testing.T) {
 			}
 		})
 	}
+}
+
+func generateContractAddress(t *testing.T) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte("contract-wallet"))
+	addr, err := strkey.Encode(strkey.VersionByteContract, sum[:])
+	require.NoError(t, err)
+	return addr
 }
