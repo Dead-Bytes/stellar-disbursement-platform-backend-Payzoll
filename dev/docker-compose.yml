@@ -11,20 +11,6 @@ services:
     depends_on:
       db:
         condition: service_started
-  # db-anchor-platform:
-  #   extends:
-  #     file: docker-compose-sdp-anchor.yml
-  #     service: db-anchor-platform
-  #   depends_on:
-  #     - sdp-api
-  #   volumes:
-  #     - postgres-ap-db:/data/postgres
-  # anchor-platform:
-  #   extends:
-  #     file: docker-compose-sdp-anchor.yml
-  #     service: anchor-platform
-  #   depends_on:
-  #     - db-anchor-platform
   sdp-tss:
     extends:
       file: docker-compose-tss.yml

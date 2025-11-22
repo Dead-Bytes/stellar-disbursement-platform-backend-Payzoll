@@ -202,43 +202,16 @@ func (s *DirectPaymentService) CreateDirectPayment(
 			return fmt.Errorf("creating payment: %w", err)
 		}
 
-			// 7. Get the created payment
-			payment, err = s.Models.Payment.Get(ctx, paymentID, dbTx)
-			if err != nil {
-				return nil, fmt.Errorf("getting created payment: %w", err)
-			}
+		// 7. Get the created payment
+		payment, err = s.Models.Payment.Get(ctx, paymentID, dbTx)
+		if err != nil {
+			return fmt.Errorf("getting created payment: %w", err)
+		}
 
-			// 8. Prepare post-commit events (same as before)
-			msgs := make([]*events.Message, 0)
-
-			// Send payment for processing if ready (for both READY and REGISTERED wallet statuses)
-			if receiverWallet.Status == data.ReadyReceiversWalletStatus || receiverWallet.Status == data.RegisteredReceiversWalletStatus {
-				paymentMsg, err := events.NewPaymentReadyToPayMessage(ctx,
-					distributionAccount.Type.Platform(), paymentID, events.PaymentReadyToPayDirectPayment)
-				if err != nil {
-					return nil, fmt.Errorf("creating payment message: %w", err)
-				}
-
-				paymentData := schemas.EventPaymentsReadyToPayData{
-					TenantID: paymentMsg.TenantID,
-					Payments: []schemas.PaymentReadyToPay{{ID: payment.ID}},
-				}
-				paymentMsg.Data = paymentData
-				msgs = append(msgs, paymentMsg)
-			}
-
-			if len(msgs) > 0 {
-				postCommitFn = func() error {
-					return events.ProduceEvents(ctx, s.EventProducer, msgs...)
-				}
-			}
-
-			return postCommitFn, nil
-		},
-	}
-
-	if err := db.RunInTransactionWithPostCommit(ctx, &opts); err != nil {
-		return nil, err
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating direct payment: %w", err)
 	}
 
 	return payment, nil
@@ -283,22 +256,22 @@ func (s *DirectPaymentService) getReceiverWallet(
 	if len(receiverWallets) > 0 {
 		receiverWallet := receiverWallets[0]
 
-	if walletAddress != nil && *walletAddress != "" {
-		// If wallet is in READY status and doesn't have a Stellar address yet, update it
-		if receiverWallet.Status == data.ReadyReceiversWalletStatus && receiverWallet.StellarAddress == "" {
-			err = s.Models.ReceiverWallet.Update(ctx, receiverWallet.ID, data.ReceiverWalletUpdate{
-				StellarAddress: *walletAddress,
-			}, dbTx)
-			if err != nil {
-				return nil, fmt.Errorf("updating receiver wallet stellar address: %w", err)
+		if walletAddress != nil && *walletAddress != "" {
+			// If wallet is in READY status and doesn't have a Stellar address yet, update it
+			if receiverWallet.Status == data.ReadyReceiversWalletStatus && receiverWallet.StellarAddress == "" {
+				err = s.Models.ReceiverWallet.Update(ctx, receiverWallet.ID, data.ReceiverWalletUpdate{
+					StellarAddress: *walletAddress,
+				}, dbTx)
+				if err != nil {
+					return nil, fmt.Errorf("updating receiver wallet stellar address: %w", err)
+				}
+				// Update the in-memory object to reflect the change
+				receiverWallet.StellarAddress = *walletAddress
+			} else if receiverWallet.StellarAddress != "" && receiverWallet.StellarAddress != *walletAddress {
+				// If address is already set but doesn't match, return error
+				return nil, fmt.Errorf("wallet address mismatch - receiver is registered with a different address for this wallet")
 			}
-			// Update the in-memory object to reflect the change
-			receiverWallet.StellarAddress = *walletAddress
-		} else if receiverWallet.StellarAddress != "" && receiverWallet.StellarAddress != *walletAddress {
-			// If address is already set but doesn't match, return error
-			return nil, fmt.Errorf("wallet address mismatch - receiver is registered with a different address for this wallet")
 		}
-	}
 
 		return receiverWallet, nil
 	}
