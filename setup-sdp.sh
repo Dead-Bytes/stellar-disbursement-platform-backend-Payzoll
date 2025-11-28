@@ -140,7 +140,8 @@ setup_database() {
 
     # Extract database name from DATABASE_URL
     if [ -n "$DATABASE_URL" ]; then
-        DB_NAME=$(echo "$DATABASE_URL" | sed -n 's/.*\/\([^?]*\).*/\1/p')
+        # Extract database name (everything between last / and ?)
+        DB_NAME=$(echo "$DATABASE_URL" | sed -E 's|.*/([^/?]+)(\?.*)?$|\1|')
     else
         DB_NAME="${DATABASE_NAME:-sdp_mtn}"
     fi
