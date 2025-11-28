@@ -144,20 +144,31 @@ ensure_database() {
         DB_NAME="${DATABASE_NAME:-sdp_mtn}"
     fi
 
-    # Check if database exists
-    if psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
-        log_success "Database '$DB_NAME' exists"
+    # Check if database exists using the DATABASE_URL
+    if psql "$DATABASE_URL" -c '\l' &>/dev/null; then
+        log_success "Database '$DB_NAME' exists and is accessible"
     else
-        log_warning "Database '$DB_NAME' does not exist. Creating..."
-        createdb "$DB_NAME" 2>/dev/null || {
-            log_info "Trying with postgres user..."
-            sudo -u postgres createdb "$DB_NAME" 2>/dev/null || {
-                log_error "Failed to create database. Please create it manually:"
-                log_error "  createdb $DB_NAME"
-                exit 1
+        log_warning "Database '$DB_NAME' does not exist or cannot connect. Attempting to create..."
+
+        # Try to create database using psql with the connection string
+        # Remove the database name from the URL to connect to postgres database first
+        POSTGRES_URL=$(echo "$DATABASE_URL" | sed "s/\/$DB_NAME/\/postgres/")
+
+        if psql "$POSTGRES_URL" -c "CREATE DATABASE $DB_NAME;" 2>/dev/null; then
+            log_success "Database '$DB_NAME' created"
+        else
+            # Fallback for local databases
+            createdb "$DB_NAME" 2>/dev/null || {
+                log_info "Trying with postgres user..."
+                sudo -u postgres createdb "$DB_NAME" 2>/dev/null || {
+                    log_error "Failed to create database. Please create it manually:"
+                    log_error "  Using DATABASE_URL: psql \"$POSTGRES_URL\" -c \"CREATE DATABASE $DB_NAME;\""
+                    log_error "  Or locally: createdb $DB_NAME"
+                    exit 1
+                }
             }
-        }
-        log_success "Database '$DB_NAME' created"
+            log_success "Database '$DB_NAME' created"
+        fi
     fi
 }
 

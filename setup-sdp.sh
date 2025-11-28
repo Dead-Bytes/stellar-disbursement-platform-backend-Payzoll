@@ -138,18 +138,38 @@ install_postgres() {
 setup_database() {
     log_info "Setting up database..."
 
-    DB_NAME="${DATABASE_NAME:-sdp_mtn}"
-
-    # Check if database exists
-    if psql -lqt | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
-        log_warning "Database '$DB_NAME' already exists. Skipping creation."
+    # Extract database name from DATABASE_URL
+    if [ -n "$DATABASE_URL" ]; then
+        DB_NAME=$(echo "$DATABASE_URL" | sed -n 's/.*\/\([^?]*\).*/\1/p')
     else
-        log_info "Creating database: $DB_NAME"
-        createdb "$DB_NAME" || {
-            log_warning "Could not create database with current user. Trying with postgres user..."
-            sudo -u postgres createdb "$DB_NAME" || log_error "Failed to create database"
-        }
-        log_success "Database '$DB_NAME' created"
+        DB_NAME="${DATABASE_NAME:-sdp_mtn}"
+    fi
+
+    # Check if database exists using the DATABASE_URL
+    if psql "$DATABASE_URL" -c '\l' &>/dev/null; then
+        log_success "Database '$DB_NAME' exists and is accessible"
+    else
+        log_warning "Database '$DB_NAME' does not exist. Creating..."
+
+        # Try to create database using psql with the connection string
+        # Remove the database name from the URL to connect to postgres database first
+        POSTGRES_URL=$(echo "$DATABASE_URL" | sed "s/\/$DB_NAME/\/postgres/")
+
+        if psql "$POSTGRES_URL" -c "CREATE DATABASE $DB_NAME;" 2>/dev/null; then
+            log_success "Database '$DB_NAME' created on remote server"
+        else
+            # Fallback for local databases
+            createdb "$DB_NAME" 2>/dev/null || {
+                log_info "Trying with postgres user..."
+                sudo -u postgres createdb "$DB_NAME" 2>/dev/null || {
+                    log_error "Failed to create database. Please create it manually:"
+                    log_error "  Remote: psql \"$POSTGRES_URL\" -c \"CREATE DATABASE $DB_NAME;\""
+                    log_error "  Local: createdb $DB_NAME"
+                    exit 1
+                }
+            }
+            log_success "Database '$DB_NAME' created"
+        fi
     fi
 }
 
